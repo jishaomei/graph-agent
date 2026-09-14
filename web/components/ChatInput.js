@@ -492,7 +492,7 @@ export default {
 
     const { preferences: shortcutPreferences } = useUserShortcuts();
     const quickSends = Vue.computed(() => {
-      if (!props.quickSendEnabled || !shortcutPreferences.value.showQuickSends || store.btwMode) return [];
+      if (!props.quickSendEnabled || store.btwMode) return [];
       const config = store.llmConfig?.[store.currentAgent];
       if (!config?.loaded || config.error) return [];
       const items = config.agentConfig?.quickSends || config.effectiveConfig?.quickSends || [];
@@ -500,10 +500,10 @@ export default {
     });
     const canQuickSend = Vue.computed(() => canSend.value && store.connectionState === 'connected'
       && store.agents?.some(agent => agent.id === store.currentAgent && agent.online));
-    Vue.watch(() => [props.quickSendEnabled, shortcutPreferences.value.showQuickSends,
+    Vue.watch(() => [props.quickSendEnabled,
       store.currentAgent, store.connectionState, store.agents?.find(agent => agent.id === store.currentAgent)?.online],
-    ([enabled, visible, agentId, connection, online]) => {
-      if (enabled && visible && agentId && connection === 'connected' && online) {
+    ([enabled, agentId, connection, online]) => {
+      if (enabled && agentId && connection === 'connected' && online) {
         store.sendWsMessage({ type: 'get_llm_config', agentId });
       }
     }, { immediate: true });
@@ -860,7 +860,7 @@ export default {
       // IME owns every key while composing. Safari can report isComposing=false
       // for the confirmation keydown but keeps the standard process keyCode.
       if (e.isComposing || e.keyCode === 229) return;
-      if (!e.defaultPrevented && props.quickSendEnabled && shortcutPreferences.value.showQuickSends) {
+      if (!e.defaultPrevented && props.quickSendEnabled) {
         const slot = [1, 2, 3, 4, 5].find(number => matchShortcut(e, shortcutPreferences.value.bindings[`quickSend${number}`]));
         if (slot) {
           e.preventDefault();

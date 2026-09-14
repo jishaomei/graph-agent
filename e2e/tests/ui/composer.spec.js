@@ -64,10 +64,6 @@ test.describe('Yeaft composer menus', () => {
         await page.evaluate(async theme => {
           document.documentElement.setAttribute('data-theme', theme);
           const store = window.Pinia.useChatStore();
-          const { useUserShortcuts } = await import('/utils/user-shortcuts.js');
-          const shortcuts = useUserShortcuts();
-          const result = shortcuts.save({ showQuickSends: true });
-          if (!result.ok) throw new Error(JSON.stringify(result));
           store.sendWsMessage = msg => { (window.__quickSendWire ||= []).push(msg); };
           store.llmConfig[store.currentAgent] = { loaded: true, agentConfig: {
             quickSends: Array.from({ length: 5 }, (_, i) => ({
@@ -84,8 +80,8 @@ test.describe('Yeaft composer menus', () => {
           const { useUserShortcuts } = await import('/utils/user-shortcuts.js');
           const preferences = useUserShortcuts().preferences.value;
           const quickSends = store.llmConfig?.[store.currentAgent]?.agentConfig?.quickSends || [];
-          return { showQuickSends: preferences.showQuickSends, binding: preferences.bindings.quickSend1, count: quickSends.length };
-        })).toEqual({ showQuickSends: true, binding: 'Alt+1', count: 5 });
+          return { binding: preferences.bindings.quickSend1, count: quickSends.length };
+        })).toEqual({ binding: 'Alt+1', count: 5 });
         await expect(page.locator('.composer-send-modes')).toHaveCount(0);
         await expect(page.locator('.composer-send-mode-trigger')).toHaveCount(0);
         await expect(page.locator('.composer-send-mode-menu')).toHaveCount(0);
@@ -140,9 +136,6 @@ test.describe('Yeaft composer menus', () => {
       await page.evaluate(async theme => {
         document.documentElement.setAttribute('data-theme', theme);
         const store = window.Pinia.useChatStore();
-        const { useUserShortcuts } = await import('/utils/user-shortcuts.js');
-        const result = useUserShortcuts().save({ showQuickSends: true });
-        if (!result.ok) throw new Error(JSON.stringify(result));
         store.llmConfig[store.currentAgent] = { loaded: true, agentConfig: {
           quickSends: [
             { id: 'fast', name: 'Fast', model: 'my-proxy/gpt-5.6-sol', effort: 'medium' },
@@ -181,9 +174,6 @@ test.describe('Yeaft composer menus', () => {
     await openYeaftComposer(page, serverUrl);
     await page.evaluate(async () => {
       const store = window.Pinia.useChatStore();
-      const { useUserShortcuts } = await import('/utils/user-shortcuts.js');
-      const result = useUserShortcuts().save({ showQuickSends: true });
-      if (!result.ok) throw new Error(JSON.stringify(result));
       store.sendWsMessage = message => { (window.__ordinarySendWire ||= []).push(message); };
       store.llmConfig[store.currentAgent] = { loaded: true, agentConfig: {
         quickSends: [{ id: 'fast', name: 'Fast', model: 'my-proxy/gpt-5.6-sol', effort: 'medium' }],

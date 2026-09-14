@@ -22,7 +22,7 @@ const LEGACY_RECOMMENDED_BINDINGS = Object.freeze({
 });
 
 export function defaultUserShortcuts() {
-  return { showQuickSends: false, bindings: { ...DEFAULT_BINDINGS } };
+  return { bindings: { ...DEFAULT_BINDINGS } };
 }
 
 /** Bindings are explicit modifiers plus a physical letter/digit key, e.g. Ctrl+Shift+Y. */
@@ -88,7 +88,6 @@ export function matchShortcut(event, binding) {
 function sanitizePreferences(value, { migrateLegacy = false } = {}) {
   const result = defaultUserShortcuts();
   if (!value || typeof value !== 'object') return result;
-  result.showQuickSends = value.showQuickSends === true;
   const inputBindings = value.bindings && typeof value.bindings === 'object' ? value.bindings : {};
   const explicitBindings = new Set(Object.values(inputBindings).map(normalizeShortcut).filter(Boolean));
   for (const action of SHORTCUT_ACTIONS) {
@@ -144,7 +143,6 @@ export function createUserShortcutsState(auth, { storage = () => globalThis.loca
   const save = update => {
     if (!ownerId.value) return { ok: false, error: 'unauthenticated' };
     const next = {
-      showQuickSends: update?.showQuickSends ?? preferences.value.showQuickSends,
       bindings: { ...preferences.value.bindings, ...update?.bindings },
     };
     for (const action of SHORTCUT_ACTIONS) {

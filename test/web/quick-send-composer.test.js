@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils';
 import * as Vue from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const preferences = Vue.ref({ showQuickSends: false, bindings: { quickSend1: 'Ctrl+E', quickSend5: 'Ctrl+J' } });
+const preferences = Vue.ref({ bindings: { quickSend1: 'Ctrl+E', quickSend5: 'Ctrl+J' } });
 vi.mock('../../web/utils/user-shortcuts.js', () => ({
   useUserShortcuts: () => ({ preferences }),
   matchShortcut: (event, binding) => !!binding && event.ctrlKey && binding.toLowerCase() === `ctrl+${event.key.toLowerCase()}`,
@@ -21,7 +21,7 @@ async function create(props = {}) {
   return wrapper;
 }
 beforeEach(() => {
-  preferences.value = { showQuickSends: false, bindings: { quickSend1: 'Ctrl+E', quickSend5: 'Ctrl+J' } };
+  preferences.value = { bindings: { quickSend1: 'Ctrl+E', quickSend5: 'Ctrl+J' } };
   store = Vue.reactive({
     activeConversationId: 'c1', currentConversation: 'c1', currentView: 'yeaft',
     currentAgent: 'a1', agents: [{ id: 'a1', online: true }, { id: 'a2', online: true }], connectionState: 'connected',
@@ -41,12 +41,8 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('Agent quick-send Composer', () => {
-  it('loads presets after opt-in and projects their names into the mobile toolbar', async () => {
+  it('loads configured presets automatically and projects their names into the mobile toolbar', async () => {
     await create();
-    expect(wrapper.find('.mobile-quick-send-bar').exists()).toBe(false);
-    expect(wrapper.find('.mobile-quick-send-button').exists()).toBe(false);
-    preferences.value.showQuickSends = true;
-    await Vue.nextTick();
     expect(store.sendWsMessage).toHaveBeenCalledWith({ type: 'get_llm_config', agentId: 'a1' });
     expect(wrapper.find('.mobile-quick-send-bar').exists()).toBe(false);
     await wrapper.get('textarea').trigger('focus');
@@ -60,7 +56,6 @@ describe('Agent quick-send Composer', () => {
   });
 
   it('exits the mobile input state after the preset send is accepted', async () => {
-    preferences.value.showQuickSends = true;
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
     const sendFn = vi.fn();
     await create({ sendFn });
@@ -78,7 +73,6 @@ describe('Agent quick-send Composer', () => {
   });
 
   it('keeps the mobile input state when a send is rejected', async () => {
-    preferences.value.showQuickSends = true;
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
     const sendFn = vi.fn(() => false);
     await create({ sendFn });
@@ -93,7 +87,6 @@ describe('Agent quick-send Composer', () => {
   });
 
   it('sends one-shot settings by shortcut with quote, then ordinary Enter has no override', async () => {
-    preferences.value.showQuickSends = true;
     const sendFn = vi.fn();
     const quote = { author: 'User', content: 'earlier' };
     await create({ sendFn, quote });
@@ -108,7 +101,6 @@ describe('Agent quick-send Composer', () => {
   });
 
   it('only sends the current Agent slot and preserves draft on rejection/offline', async () => {
-    preferences.value.showQuickSends = true;
     const sendFn = vi.fn(() => false);
     await create({ sendFn });
     await wrapper.get('textarea').setValue('keep');
@@ -128,7 +120,6 @@ describe('Agent quick-send Composer', () => {
   });
 
   it('does not send on IME, repeat, empty input, or an unconfigured slot', async () => {
-    preferences.value.showQuickSends = true;
     const sendFn = vi.fn();
     await create({ sendFn });
     const input = wrapper.get('textarea');
