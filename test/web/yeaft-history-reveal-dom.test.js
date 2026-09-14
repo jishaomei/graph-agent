@@ -159,7 +159,7 @@ async function openDefaultUserSearch(wrapper, store, results = [
   await Vue.nextTick();
 }
 
-function mountPage({ renderComposer = false } = {}) {
+function mountPage({ renderComposer = false, renderOriginLinks = false } = {}) {
   const stubs = {
     YeaftSidebar: true,
     WorkbenchPanel: true,
@@ -183,6 +183,13 @@ function mountPage({ renderComposer = false } = {}) {
     ReflectionCard: true,
     SubAgentCard: true,
   };
+  if (renderOriginLinks) {
+    stubs.AssistantTurn = {
+      props: ['originMessageId'],
+      emits: ['jump-to-origin'],
+      template: '<button v-if="originMessageId" class="response-origin-stub" @click="$emit(\'jump-to-origin\', originMessageId)">{{ originMessageId }}</button>',
+    };
+  }
   if (!renderComposer) stubs.ChatInput = true;
   return mount(YeaftPage, {
     attachTo: document.body,
@@ -432,6 +439,52 @@ describe('Yeaft history result rendered reveal', () => {
 
   historyScenario('keeps interleaved history frames in one block per VP execution and splits a later handoff', async () => {
     await expectInterleavedVpExecutionBlocks({ isHistory: true });
+  });
+
+  it('jumps each response back to the user question that started its message block', async () => {
+    vi.useFakeTimers();
+    const store = primeStore();
+    store.yeaftMessageWindowState[yeaftHistoryIdentityKey('agent-a', 'same')] = { visibleTurns: 20 };
+    store.messagesMap['conv-a'] = [
+      { id: 'u1', type: 'user', content: 'Compare both approaches', sessionId: 'same', timestamp: 1 },
+      { id: 'a1', type: 'assistant', content: 'First response', sessionId: 'same', turnId: 'turn-a', status: 'completed', timestamp: 2 },
+      { id: 'a2', type: 'assistant', content: 'Second response', sessionId: 'same', turnId: 'turn-b', status: 'completed', timestamp: 3 },
+      { id: 'orphan-a', type: 'assistant', content: 'Orphan response', sessionId: 'same', turnId: 'turn-orphan', status: 'completed', timestamp: 4 },
+    ];
+    // A system row creates a real message-block boundary without becoming an
+    // origin. The assistant after it must not link to the previous question.
+    store.messagesMap['conv-a'].splice(3, 0, {
+      id: 'sys1', type: 'system', content: 'Boundary', sessionId: 'same', timestamp: 3.5,
+    });
+
+    const wrapper = mountPage({ renderOriginLinks: true });
+    await flushPromises();
+    await Vue.nextTick();
+
+    const links = wrapper.findAll('.response-origin-stub');
+    expect(links).toHaveLength(2);
+    expect(links.map(link => link.text())).toEqual(['u1', 'u1']);
+
+    const virtualTranscript = wrapper.getComponent({ name: 'VirtualTranscript' });
+    const scrollToKey = vi.fn(async () => true);
+    const anchorTarget = vi.fn(() => true);
+    virtualTranscript.vm.$.exposed.scrollToKey = scrollToKey;
+    virtualTranscript.vm.$.exposed.anchorTarget = anchorTarget;
+
+    await links[1].trigger('click');
+    await flushPromises();
+    await Vue.nextTick();
+
+    expect(scrollToKey).toHaveBeenCalledOnce();
+    expect(scrollToKey).toHaveBeenCalledWith('block_u1', { align: 'start' });
+    const questionRow = wrapper.get('[data-msg-id="u1"]');
+    expect(anchorTarget).toHaveBeenCalledWith('block_u1', questionRow.element, { align: 'start' });
+    expect(questionRow.classes()).toContain('msg-flash');
+
+    vi.advanceTimersByTime(1800);
+    await Vue.nextTick();
+    expect(questionRow.classes()).not.toContain('msg-flash');
+    wrapper.unmount();
   });
 
   it('keeps composer menus click-driven and opens LLM configuration from the menu item', async () => {

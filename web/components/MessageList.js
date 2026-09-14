@@ -216,7 +216,9 @@ export default {
                   :response-collapsible="responseToggleBelongsToItem(block, item)"
                   :response-collapsed="block.responseCollapsed"
                   :response-toggle-label="responseCollapseLabel(block)"
+                  :origin-message-id="block.originMessageId"
                   @quote="$emit('quote-message', $event)"
+                  @jump-to-origin="jumpToOrigin"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
                   @open-debug="onOpenTurnDebug(item)"
                 />
@@ -230,7 +232,9 @@ export default {
                   :response-collapsible="responseToggleBelongsToItem(block, item)"
                   :response-collapsed="block.responseCollapsed"
                   :response-toggle-label="responseCollapseLabel(block)"
+                  :origin-message-id="block.originMessageId"
                   @update-actions-expanded="value => setAssistantTurnActionsExpanded(item, value)"
+                  @jump-to-origin="jumpToOrigin"
                   @update-tool-expanded="setToolExpanded"
                   @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
@@ -1264,6 +1268,7 @@ export default {
             uiKey: meta.uiKey,
             vpId: meta.vpId,
             messageId: meta.messageId,
+            originMessageId: item.type === 'user' ? item.id : '',
             items: [item],
           };
           return;
@@ -2055,6 +2060,29 @@ export default {
 
     const flashMsgId = Vue.ref(null);
     let flashGeneration = 0;
+    const flashMessageRow = (rowId) => {
+      const generation = ++flashGeneration;
+      flashMsgId.value = rowId;
+      setTimeout(() => {
+        if (generation === flashGeneration) flashMsgId.value = null;
+      }, 1800);
+    };
+
+    const jumpToOrigin = async (originMessageId) => {
+      if (!originMessageId) return false;
+      const block = messageBlocks.value.find(item => item?.originMessageId === originMessageId);
+      if (!block?.id) return false;
+      pauseAutoFollow();
+      const moved = await virtualTranscriptRef.value?.scrollToKey?.(block.id, { align: 'start' });
+      if (!moved) return false;
+      await Vue.nextTick();
+      const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
+      const row = Array.from(rows).find(el => el?.dataset?.msgId === originMessageId) || null;
+      if (!row) return false;
+      virtualTranscriptRef.value?.anchorTarget?.(block.id, row, { align: 'start' });
+      flashMessageRow(originMessageId);
+      return true;
+    };
 
     const revealMessage = async (target) => {
       if (!target) return false;
@@ -2073,13 +2101,7 @@ export default {
           return Array.from(rows).find(el => el?.dataset?.msgId === rowId) || null;
         },
         anchorRow: (blockId, _rowId, row, options) => virtualTranscriptRef.value?.anchorTarget?.(blockId, row, options),
-        flashRow: (rowId) => {
-          const generation = ++flashGeneration;
-          flashMsgId.value = rowId;
-          setTimeout(() => {
-            if (generation === flashGeneration) flashMsgId.value = null;
-          }, 1800);
-        },
+        flashRow: flashMessageRow,
       });
       return revealed;
     };
@@ -2121,6 +2143,7 @@ export default {
       containerRef,
       virtualTranscriptRef,
       flashMsgId,
+      jumpToOrigin,
       hasStreamingMessage,
       nowMs,
       showTypingDots,

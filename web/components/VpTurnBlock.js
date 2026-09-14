@@ -45,8 +45,9 @@ export default {
     displayNameOverride: { type: String, default: '' },
     canStop: { type: Boolean, default: true },
     interactiveSpeaker: { type: Boolean, default: true },
+    originMessageId: { type: String, default: '' },
   },
-  emits: ['toggle-response-collapse', 'quote', 'open-debug'],
+  emits: ['toggle-response-collapse', 'quote', 'open-debug', 'jump-to-origin'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -115,9 +116,11 @@ export default {
           :response-toggle-label="responseToggleLabel"
           :session-actions="true"
           :quote-author="displayName"
+          :origin-message-id="originMessageId"
           :show-debug-action="hasDebugEntry"
           :debug-action-title="debugActionTitle"
           @quote="$emit('quote', $event)"
+          @jump-to-origin="$emit('jump-to-origin', $event)"
           @open-debug="$emit('open-debug')"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />

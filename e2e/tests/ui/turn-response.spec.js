@@ -70,6 +70,77 @@ function askUserScript() {
   `;
 }
 
+function originNavigationHarnessHtml() {
+  return `<!doctype html>
+<html data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/web/dist/style.bundle.css">
+  <style>
+    html, body, #app { height: 100%; margin: 0; }
+    body { background: var(--bg-main); color: var(--text-primary); }
+    .origin-harness { height: 100%; display: flex; flex-direction: column; }
+    .origin-harness .chat-container { flex: 1; padding: 0; }
+    .origin-question, .origin-next { padding: 20px 0; }
+    .origin-next { min-height: 900px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/web/vendor/vue.global.prod.js"></script>
+  <script type="module">
+    window.Pinia = {
+      defineStore: () => () => ({}),
+      useChatStore: () => ({ answerUserQuestion() {}, cancelVpTurn() {} }),
+    };
+    window.marked = {
+      setOptions() {},
+      parse(text) { return '<p>' + String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') + '</p>'; },
+    };
+    window.hljs = undefined;
+    const { default: VpTurnBlock } = await import('/web/components/VpTurnBlock.js');
+    const responseText = Array.from({ length: 90 }, (_, index) => 'Response section ' + (index + 1) + ' explains the implementation and verification details.').join(' ');
+    const turn = Vue.reactive({
+      id: 'turn-origin', turnId: 'turn-origin', textContent: responseText,
+      textSegments: [{ key: 'result', content: responseText, kind: 'result', explicitKind: true, isStreaming: false }],
+      toolMsgs: [], imageMsgs: [], todoMsg: null, askMsg: null, messages: [],
+      isStreaming: false, isActive: false, speakerVpId: 'vp-origin', speakerTimestamp: Date.now(),
+    });
+    const scroller = Vue.ref(null);
+    const jumpCount = Vue.ref(0);
+    const jumpToQuestion = () => {
+      jumpCount.value += 1;
+      scroller.value.scrollTo({ top: 0, behavior: 'instant' });
+      document.querySelector('.origin-question')?.classList.add('msg-flash');
+    };
+    const app = Vue.createApp({
+      components: { VpTurnBlock },
+      setup() { return { turn, scroller, jumpCount, jumpToQuestion }; },
+      template: ` + "`" + `<div class="yeaft-page origin-harness">
+        <main ref="scroller" class="chat-container">
+          <div class="messages">
+            <section class="origin-question msg-row" data-msg-id="question-origin">How should this feature work?</section>
+            <div class="virtual-transcript-item" data-response-boundary>
+              <VpTurnBlock :turn="turn" display-name-override="Yeaft" :interactive-speaker="false"
+                origin-message-id="question-origin" @jump-to-origin="jumpToQuestion" />
+            </div>
+            <section class="origin-next">Following conversation</section>
+          </div>
+        </main>
+        <output data-jump-count>{{ jumpCount }}</output>
+      </div>` + "`" + `,
+    });
+    const translate = key => ({ 'message.backToQuestion': 'Back to question' })[key] || key;
+    app.config.globalProperties.$t = translate;
+    app.provide('t', translate);
+    app.mount('#app');
+    window.__ready = true;
+  </script>
+</body>
+</html>`;
+}
+
 function harnessHtml(debug = false) {
   if (debug === 'ask') return harnessHtml()
     .replace(/<script type="module">[\s\S]*?<\/script>/, () => '<script type="module">' + askUserScript() + '</script>');
@@ -166,9 +237,11 @@ test.beforeAll(async () => {
   });
   server = createServer((request, response) => {
     const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
-    if (pathname === '/__turn-response' || pathname === '/__debug-panel' || pathname === '/__ask-user') {
+    if (pathname === '/__turn-response' || pathname === '/__debug-panel' || pathname === '/__ask-user' || pathname === '/__origin-navigation') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      response.end(harnessHtml(pathname === '/__ask-user' ? 'ask' : pathname === '/__debug-panel'));
+      response.end(pathname === '/__origin-navigation'
+        ? originNavigationHarnessHtml()
+        : harnessHtml(pathname === '/__ask-user' ? 'ask' : pathname === '/__debug-panel'));
       return;
     }
     if (pathname === '/gallery-a.png' || pathname === '/gallery-b.png') {
@@ -344,6 +417,67 @@ test('debug panel keeps one latest request and full loop tools across themes and
   await expect(request).toContainText('此 Turn 暂无可用请求体。');
   await expect(system).toContainText('此 Turn 暂无可用系统提示。');
   await expect(result).toContainText('RESULT_TAIL');
+});
+
+test('keeps the response-owned back-to-question action reachable through a long response', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.goto(`${baseUrl}/__origin-navigation`);
+  await page.waitForFunction(() => window.__ready === true);
+
+  const scroller = page.locator('.chat-container');
+  const responseBoundary = page.locator('[data-response-boundary]');
+  const button = page.getByRole('button', { name: 'Back to question' });
+  const question = page.locator('.origin-question');
+  await expect(button).toBeVisible();
+  const initial = await page.evaluate(() => {
+    const nav = document.querySelector('.response-origin-nav').getBoundingClientRect();
+    const body = document.querySelector('.turn-message-block').getBoundingClientRect();
+    return { navBottom: nav.bottom, bodyTop: body.top };
+  });
+  expect(initial.bodyTop).toBeGreaterThanOrEqual(initial.navBottom);
+
+  for (const { width, height, theme } of [
+    { width: 1280, height: 640, theme: 'light' },
+    { width: 320, height: 640, theme: 'dark' },
+  ]) {
+    await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await page.setViewportSize({ width, height });
+    await scroller.evaluate(element => { element.scrollTop = 900; });
+    await expect(button).toBeVisible();
+    const sticky = await page.evaluate(() => {
+      const scrollerRect = document.querySelector('.chat-container').getBoundingClientRect();
+      const buttonRect = document.querySelector('.response-origin-btn').getBoundingClientRect();
+      const boundaryRect = document.querySelector('[data-response-boundary]').getBoundingClientRect();
+      return {
+        buttonTop: buttonRect.top,
+        scrollerTop: scrollerRect.top,
+        buttonBottom: buttonRect.bottom,
+        boundaryBottom: boundaryRect.bottom,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+      };
+    });
+    expect(sticky.buttonTop).toBeGreaterThanOrEqual(sticky.scrollerTop + 7);
+    expect(sticky.buttonTop).toBeLessThanOrEqual(sticky.scrollerTop + 10);
+    expect(sticky.buttonBottom).toBeLessThanOrEqual(sticky.boundaryBottom);
+    expect(sticky.documentWidth).toBeLessThanOrEqual(sticky.viewportWidth);
+
+    await button.click();
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0);
+    await expect(question).toHaveClass(/msg-flash/);
+  }
+
+  await scroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const released = await page.evaluate(() => ({
+    boundaryBottom: document.querySelector('[data-response-boundary]').getBoundingClientRect().bottom,
+    buttonBottom: document.querySelector('.response-origin-btn').getBoundingClientRect().bottom,
+    scrollerTop: document.querySelector('.chat-container').getBoundingClientRect().top,
+  }));
+  expect(released.boundaryBottom).toBeLessThan(released.scrollerTop);
+  expect(released.buttonBottom).toBeLessThan(released.scrollerTop);
+  await expect(page.locator('[data-jump-count]')).toHaveText('2');
+  expect(pageErrors).toEqual([]);
 });
 
 test('keeps progress visible and distinct from the final result across themes and mobile', async ({ page }) => {
