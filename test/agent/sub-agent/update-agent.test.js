@@ -46,7 +46,7 @@ describe('parent-owned live child controls', () => {
     expect(agent.usage).toEqual(originalUsage);
     expect(agent.budget).toMatchObject({ max_llm_calls: 12, max_tool_calls: 90, wall_time_ms: 1800000 });
     expect(agent.rearmWallTimeWatchdog).toHaveBeenCalledTimes(1);
-    expect(agent.diagnostics[0]).toMatchObject({ type: 'sub_agent_control_updated', previousBudget: { max_tool_calls: 64 } });
+    expect(agent.diagnostics[0]).toMatchObject({ type: 'sub_agent_control_updated', previousBudget: {} });
     const before = { ...agent.budget };
     expect((await update({ budget: { max_tool_calls: 120 }, allow_tools: ['Unavailable'] })).error).toBeTruthy();
     expect(agent.budget).toEqual(before);
@@ -72,7 +72,7 @@ describe('parent-owned live child controls', () => {
     agent.budgetReportStarted = false;
     agent.abortController.abort();
     expect((await update({ budget: { max_tool_calls: 100 } })).error).toBeTruthy();
-    expect(agent.budget.max_tool_calls).toBe(64);
+    expect(agent.budget.max_tool_calls).toBeUndefined();
   });
 
   it('grants and revokes reviewer tools without changing the parent or allowing self-elevation', async () => {

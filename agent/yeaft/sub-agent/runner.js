@@ -17,7 +17,7 @@
  *     after PromptAgent
  *   - a durable output log at ~/.yeaft/sub-agents/<agentId>.log mirroring
  *     every onEvent (see output-log.js)
- *   - a liveness snapshot (toolUseCount, tokenCount, lastEventAt, …) the
+ *   - a liveness snapshot (toolUseCount, usageTokens, outputChars, lastEventAt, …) the
  *     parent reads through WaitAgent / ListAgents
  *
  * The runner is fire-and-forget: `startSubAgent(agent, deps)` schedules a
@@ -60,8 +60,8 @@ async function loadTickAgent() {
   return _tickAgent;
 }
 
-/** How long an idle sub-agent may wait for a follow-up before the watchdog reaps it. */
-const IDLE_ABANDON_MS = 5 * 60 * 1000; // 5 minutes
+/** Retained idle agents have no implicit lifetime deadline. */
+const IDLE_ABANDON_MS = 0;
 
 /** Cap on agent.lastResult (mid-stream preview) — keeps memory bounded. */
 const LAST_RESULT_MAX_CHARS = 8 * 1024;
@@ -137,7 +137,7 @@ export function startSubAgent(agent, deps = {}) {
     // turns must not pollute the user-facing conversation history. The
     // memory stores are shared so memory recall still works for the
     // sub-agent (matches parent VP persona memory).
-    agent.budget = resolveSubAgentBudget(agent.budget, agent.persona);
+    agent.budget = resolveSubAgentBudget(agent.budget);
     agent.execution = agent.execution || createExecutionStats();
     const childRegistry = buildChildToolRegistry(deps.parentToolRegistry, { agent });
     subEngine = new Engine({
@@ -250,9 +250,8 @@ export function startSubAgent(agent, deps = {}) {
  *      liveness + lastResult.
  *   3. Stash the final assistant text on agent.result, tickAgent for
  *      budget enforcement, mark idle.
- *   4. Wait for either a new PromptAgent (status flips to running) OR
- *      CloseAgent (status=='closed') OR the idle watchdog firing
- *      (status=='abandoned').
+ *   4. Wait for PromptAgent or CloseAgent. An idle abandonment timeout is
+ *      available only when the embedding caller explicitly configures one.
  */
 function buildWallTimeBudgetResult(agent, reason) {
   return {
@@ -311,7 +310,7 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
     wallTimeWatchdog = armWallTimeWatchdog(agent, deps);
   };
   agent.rearmWallTimeWatchdog();
-  const idleAbandonMs = typeof deps.idleAbandonMs === 'number' && deps.idleAbandonMs > 0
+  const idleAbandonMs = Number.isFinite(deps.idleAbandonMs) && deps.idleAbandonMs > 0
     ? deps.idleAbandonMs : IDLE_ABANDON_MS;
 
   const wrapEvt = (evt) => ({
@@ -399,8 +398,8 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
     while (!isTerminalAgentStatus(agent.status)) {
       const queuedPrompt = dequeueNextUserPrompt();
       if (!queuedPrompt) {
-        // No queued work — go idle and wait for PromptAgent / CloseAgent /
-        // watchdog.
+        // No queued work — retain the agent for PromptAgent / CloseAgent.
+        // A caller-provided idleAbandonMs may opt into automatic cleanup.
         agent.status = STATUS.IDLE;
         agent.idleSince = Date.now();
         emit({ type: 'sub_agent_status', status: STATUS.IDLE });
@@ -444,7 +443,6 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
       let budgetReportText = '';
       let endedNormally = false;
       let streamError = null;
-      const turnTokenStart = agent.liveness?.tokenCount || 0;
       const priorUsageTokens = agent.usage?.tokens || 0;
       let turnUsageTokens = 0;
       try {
@@ -594,13 +592,12 @@ async function driveSubAgent(agent, subEngine, vpPersona, deps) {
       try {
         const tickAgent = await loadTickAgent();
         if (typeof tickAgent === 'function') {
-          const textTokenDelta = Math.max(0, (agent.liveness?.tokenCount || 0) - turnTokenStart);
-          const tokenDelta = turnUsageTokens > 0 ? turnUsageTokens : textTokenDelta;
-          // Usage events are exposed live; tickAgent adds the turn delta once.
+          // Provider usage is authoritative. If a provider omits usage, keep the
+          // count unknown/unchanged rather than disguising output characters as tokens.
           agent.usage.tokens = priorUsageTokens;
           tickResult = tickAgent(agent.id, {
             turns: 1,
-            tokens: tokenDelta,
+            tokens: turnUsageTokens,
             partial_output: assistantText,
           });
         }

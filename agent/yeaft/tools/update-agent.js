@@ -59,7 +59,8 @@ export default defineTool({
     agent.budget = { ...agent.budget, ...input.budget };
     if (grants) agent.allowTools = grants.tools;
     agent.controlRevision = (agent.controlRevision || 0) + 1;
-    if (agent.execution && agent.execution.toolCalls < agent.budget.max_tool_calls * 0.75) agent.execution.warning = null;
+    if (agent.execution && (agent.budget.max_tool_calls === undefined
+        || agent.execution.toolCalls < agent.budget.max_tool_calls * 0.75)) agent.execution.warning = null;
     if (!agent.budgetReportStarted) {
       agent.toolBudgetReason = null;
       agent.executionBudgetReason = null;

@@ -18,17 +18,20 @@ export function validateBudget(budget) {
   return null;
 }
 
-/** Defaults are safety ceilings, not targets; explicit positive limits override each field. */
-export function resolveSubAgentBudget(budget, persona) {
-  return {
-    max_tool_calls: persona === 'implementer' ? 128 : 64,
-    wall_time_ms: 15 * 60 * 1000,
-    ...budget,
-  };
+/** No implicit lifetime ceiling: only caller-provided positive limits apply. */
+export function resolveSubAgentBudget(budget) {
+  return budget && typeof budget === 'object' ? { ...budget } : {};
 }
 
 export function createExecutionStats() {
-  return { toolCalls: 0, completedCalls: 0, failedCalls: 0, repeatedResults: 0, recentCalls: [], warning: null };
+  return {
+    toolCalls: 0,
+    completedCalls: 0,
+    failedCalls: 0,
+    repeatedResults: 0,
+    recentCalls: [],
+    warning: null,
+  };
 }
 
 function fingerprint(value) {
@@ -77,8 +80,11 @@ export class SubAgentToolRegistry extends ToolRegistry {
     const elapsedMs = Date.now() - (agent.usage?.startedAt || Date.now());
     const nearTime = agent.budget?.wall_time_ms && elapsedMs >= agent.budget.wall_time_ms * 0.75;
     const updated = agent.controlRevision ? `[Parent control revision ${agent.controlRevision}] Current lifetime ceilings replace the initial preamble: ${JSON.stringify(agent.budget)}. Extra tool grants: ${JSON.stringify(agent.allowTools || [])}. Use DiscoverTools if an allowed tool is not yet visible.\n` : '';
+    const remainingTime = agent.budget?.wall_time_ms === undefined
+      ? 'wall time unlimited'
+      : `${Math.max(0, agent.budget.wall_time_ms - elapsedMs)}ms remaining`;
     return nearLimit || nearTime || updated ? {
-      prompt: `${updated}[Sub-agent execution budget] ${stats.toolCalls}/${limit ?? 'unset'} tools, ${llmCalls}/${llmLimit ?? 'unset'} LLM requests used; ${Math.max(0, (agent.budget?.wall_time_ms || 0) - elapsedMs)}ms remaining. Finish the assigned result using existing evidence where possible. Investigate only essential remaining unknowns, then return a conclusion.`,
+      prompt: `${updated}[Sub-agent execution budget] ${stats.toolCalls}/${limit ?? 'unlimited'} tools, ${llmCalls}/${llmLimit ?? 'unlimited'} LLM requests used; ${remainingTime}. Finish the assigned result using existing evidence where possible. Investigate only essential remaining unknowns, then return a conclusion.`,
     } : null;
   }
 
@@ -115,6 +121,7 @@ export class SubAgentToolRegistry extends ToolRegistry {
       throw new Error(`${agent.toolBudgetReason}; no further tools may execute. Return findings from the available evidence.`);
     }
     stats.toolCalls += 1;
+    if (agent.liveness) agent.liveness.toolUseCount = stats.toolCalls;
     agent.usage ||= { tokens: 0, turns: 0, startedAt: Date.now() };
     agent.usage.toolCalls = stats.toolCalls;
     const entry = { name: tool.name, status: 'running' };

@@ -7,7 +7,7 @@ import { defineTool } from '../../../agent/yeaft/tools/types.js';
 import { buildChildToolRegistry, startSubAgent } from '../../../agent/yeaft/sub-agent/runner.js';
 import { SubAgentToolRegistry, resolveSubAgentBudget } from '../../../agent/yeaft/sub-agent/execution-control.js';
 import { validateSpec, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
-import { diagnoseAgentLiveness } from '../../../agent/yeaft/sub-agent/liveness.js';
+import { bumpLivenessFromEvent, diagnoseAgentLiveness, makeLiveness, snapshotLiveness } from '../../../agent/yeaft/sub-agent/liveness.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { Engine } from '../../../agent/yeaft/engine.js';
 
@@ -28,12 +28,54 @@ async function waitForCleanup(agent) {
 }
 
 describe('sub-agent execution control', () => {
-  it('applies overridable ceilings and rejects invalid budget values', () => {
-    expect(resolveSubAgentBudget(null)).toMatchObject({ max_tool_calls: 64, wall_time_ms: 900000 });
-    expect(resolveSubAgentBudget({ wall_time_ms: 2000 }, 'implementer')).toEqual({ max_tool_calls: 128, wall_time_ms: 2000 });
+  it('applies only requested ceilings and rejects invalid budget values', () => {
+    expect(resolveSubAgentBudget(null)).toEqual({});
+    expect(resolveSubAgentBudget(undefined)).toEqual({});
+    expect(resolveSubAgentBudget({ wall_time_ms: 2000 })).toEqual({ wall_time_ms: 2000 });
     for (const value of [NaN, Infinity, 0, -1, 1.5]) {
       expect(validateSpec({ name: 'test', mission: 'read', budget: { max_tool_calls: value } }).ok).toBe(false);
     }
+  });
+
+  it('keeps provider usage, output volume, event count, and actual executions distinct', async () => {
+    const liveness = makeLiveness();
+    bumpLivenessFromEvent(liveness, { type: 'text_delta', text: 'four' });
+    bumpLivenessFromEvent(liveness, { type: 'tool_call', id: 'requested', name: 'FileRead' });
+    bumpLivenessFromEvent(liveness, { type: 'tool_start', id: 'started', name: 'FileRead' });
+    bumpLivenessFromEvent(liveness, {
+      type: 'usage', inputTokens: 3, outputTokens: 2,
+      cacheReadTokens: 7, cacheWriteTokens: 1, cacheTokensAreIncludedInInput: false,
+    });
+
+    expect(snapshotLiveness(liveness)).toMatchObject({
+      toolUseCount: 0,
+      usageTokens: 13,
+      outputChars: 4,
+      eventCount: 4,
+      recentTools: ['FileRead'],
+    });
+
+    const agent = record();
+    agent.liveness = liveness;
+    const child = new SubAgentToolRegistry({ agent }).register(readTool());
+    await child.execute('Read', {});
+    expect(snapshotLiveness(liveness)).toMatchObject({
+      toolUseCount: 1,
+      usageTokens: 13,
+      outputChars: 4,
+      eventCount: 4,
+    });
+  });
+
+  it('keeps stale detection diagnostic and never aborts live work', () => {
+    const agent = record();
+    agent.status = 'running';
+    agent.createdAt = 1_000;
+    agent.liveness = makeLiveness();
+    const snapshot = diagnoseAgentLiveness(agent, { now: 200_000, thresholdMs: 1_000 });
+    expect(snapshot).toMatchObject({ stale: true, stalled: true });
+    expect(snapshot.diagnostic).toContain('diagnostic only');
+    expect(agent.abortController.signal.aborted).toBe(false);
   });
 
   it('fences aliases, discovery and hot-registered tools without mutating the parent', async () => {
@@ -102,6 +144,80 @@ describe('sub-agent execution control', () => {
     const child = new SubAgentToolRegistry({ agent }).register(readTool(async () => { calls++; return 'bad'; }));
     await expect(child.execute('Read', {})).rejects.toThrow('closed');
     expect(calls).toBe(0);
+  });
+
+  it('retains an unbudgeted idle agent and does not infer token usage from generated characters', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-execution-no-usage-'));
+    const agent = record({ max_tokens: 1 });
+    const adapter = {
+      async *stream() {
+        yield { type: 'text_delta', text: 'many generated characters without provider usage' };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    getAgentRegistry().set(agent.id, agent);
+    try {
+      startSubAgent(agent, {
+        adapter,
+        config: { model: 'test', maxOutputTokens: 1024, _readOnly: true },
+        trace: new NullTrace(),
+        parentToolRegistry: new ToolRegistry(),
+        subAgentLogDir: dir,
+        yeaftDir: dir,
+      });
+      const deadline = Date.now() + 4000;
+      while (agent.status !== 'idle' && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      expect(agent.status).toBe('idle');
+      expect(agent.__driverStarted).toBe(true);
+      expect(agent.usage.tokens).toBe(0);
+      expect(agent.liveness.usageTokens).toBe(0);
+      expect(agent.liveness.outputChars).toBeGreaterThan(1);
+      expect(agent.abortController.signal.aborted).toBe(false);
+    } finally {
+      agent.status = 'closed';
+      agent.abortController.abort('cleanup');
+      await waitForCleanup(agent);
+      getAgentRegistry().delete(agent.id);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('abandons idle work only when the embedding caller explicitly opts into an idle timeout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-execution-explicit-idle-'));
+    const agent = record();
+    const adapter = {
+      async *stream() {
+        yield { type: 'text_delta', text: 'done' };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    getAgentRegistry().set(agent.id, agent);
+    try {
+      startSubAgent(agent, {
+        adapter,
+        config: { model: 'test', maxOutputTokens: 1024, _readOnly: true },
+        trace: new NullTrace(),
+        parentToolRegistry: new ToolRegistry(),
+        subAgentLogDir: dir,
+        yeaftDir: dir,
+        idleAbandonMs: 25,
+      });
+      const deadline = Date.now() + 4000;
+      while (agent.status !== 'abandoned' && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      expect(agent.status).toBe('abandoned');
+      expect(agent.error).toContain('idle for more than 25ms');
+    } finally {
+      agent.abortController.abort('cleanup');
+      await waitForCleanup(agent);
+      getAgentRegistry().delete(agent.id);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([false, true])('counts cached tokens without duplication and returns current follow-up evidence (included=%s)', async included => {
