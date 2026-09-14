@@ -186,8 +186,7 @@ function mountPage({ renderComposer = false, renderOriginLinks = false } = {}) {
   if (renderOriginLinks) {
     stubs.AssistantTurn = {
       props: ['originMessageId'],
-      emits: ['jump-to-origin'],
-      template: '<button v-if="originMessageId" class="response-origin-stub" @click="$emit(\'jump-to-origin\', originMessageId)">{{ originMessageId }}</button>',
+      template: '<span class="assistant-turn-stub" :data-response-origin-id="originMessageId || null">{{ originMessageId }}</span>',
     };
   }
   if (!renderComposer) stubs.ChatInput = true;
@@ -461,9 +460,28 @@ describe('Yeaft history result rendered reveal', () => {
     await flushPromises();
     await Vue.nextTick();
 
-    const links = wrapper.findAll('.response-origin-stub');
-    expect(links).toHaveLength(2);
-    expect(links.map(link => link.text())).toEqual(['u1', 'u1']);
+    const responses = wrapper.findAll('[data-response-origin-id]');
+    expect(responses).toHaveLength(2);
+    expect(responses.map(response => response.attributes('data-response-origin-id'))).toEqual(['u1', 'u1']);
+    expect(wrapper.findAll('.response-origin-btn')).toHaveLength(0);
+
+    const messageList = wrapper.getComponent({ name: 'MessageList' });
+    const scroller = messageList.get('main.chat-container').element;
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 400 });
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 400, height: 400, left: 0, right: 800, width: 800 });
+    responses.forEach((response, index) => {
+      response.element.getBoundingClientRect = () => index === 0
+        ? ({ top: -200, bottom: 800, height: 1000, left: 0, right: 800, width: 800 })
+        : ({ top: 820, bottom: 920, height: 100, left: 0, right: 800, width: 800 });
+    });
+    scroller.dispatchEvent(new Event('scroll'));
+    vi.advanceTimersByTime(16);
+    await Vue.nextTick();
+
+    const originButton = messageList.get('.response-origin-btn');
+    expect(originButton.text()).toBe('message.question');
+    expect(originButton.attributes('aria-label')).toBe('message.backToQuestion');
+    expect(messageList.findAll('.response-origin-btn')).toHaveLength(1);
 
     const virtualTranscript = wrapper.getComponent({ name: 'VirtualTranscript' });
     const scrollToKey = vi.fn(async () => true);
@@ -471,7 +489,7 @@ describe('Yeaft history result rendered reveal', () => {
     virtualTranscript.vm.$.exposed.scrollToKey = scrollToKey;
     virtualTranscript.vm.$.exposed.anchorTarget = anchorTarget;
 
-    await links[1].trigger('click');
+    await originButton.trigger('click');
     await flushPromises();
     await Vue.nextTick();
 
@@ -480,6 +498,7 @@ describe('Yeaft history result rendered reveal', () => {
     const questionRow = wrapper.get('[data-msg-id="u1"]');
     expect(anchorTarget).toHaveBeenCalledWith('block_u1', questionRow.element, { align: 'start' });
     expect(questionRow.classes()).toContain('msg-flash');
+    expect(messageList.find('.response-origin-btn').exists()).toBe(false);
 
     vi.advanceTimersByTime(1800);
     await Vue.nextTick();

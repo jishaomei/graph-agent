@@ -33,6 +33,7 @@ import {
 import { navigateToPersistedMessage } from '../utils/message-search-navigation.js';
 import { formatSessionMessageDateTime } from '../utils/session-message-quote.js';
 import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../utils/turn-response.js';
+import { resolveLongResponseOrigin } from '../utils/response-origin-navigation.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -218,7 +219,6 @@ export default {
                   :response-toggle-label="responseCollapseLabel(block)"
                   :origin-message-id="block.originMessageId"
                   @quote="$emit('quote-message', $event)"
-                  @jump-to-origin="jumpToOrigin"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
                   @open-debug="onOpenTurnDebug(item)"
                 />
@@ -234,7 +234,6 @@ export default {
                   :response-toggle-label="responseCollapseLabel(block)"
                   :origin-message-id="block.originMessageId"
                   @update-actions-expanded="value => setAssistantTurnActionsExpanded(item, value)"
-                  @jump-to-origin="jumpToOrigin"
                   @update-tool-expanded="setToolExpanded"
                   @quote="$emit('quote-message', $event)"
                   @toggle-response-collapse="toggleMessageTurnResponse(block)"
@@ -658,9 +657,21 @@ export default {
         </template>
       </div>
 
-      <button type="button" class="scroll-to-latest" :class="{ 'is-hidden': isAtBottom }" @click="scrollToLatest">
-        {{ $t('message.scrollToLatest') }}
-      </button>
+      <nav class="transcript-navigation" :aria-label="$t('message.navigation')">
+        <button
+          v-if="activeLongResponseOriginId"
+          type="button"
+          class="transcript-navigation-btn response-origin-btn"
+          @click="jumpToOrigin(activeLongResponseOriginId)"
+          :title="$t('message.backToQuestion')"
+          :aria-label="$t('message.backToQuestion')"
+        >
+          {{ $t('message.question') }}
+        </button>
+        <button type="button" class="transcript-navigation-btn scroll-to-latest" :class="{ 'is-hidden': isAtBottom }" @click="scrollToLatest">
+          {{ $t('message.scrollToLatest') }}
+        </button>
+      </nav>
     </main>
   `,
   emits: ['new-conversation', 'resume-conversation', 'open-settings', 'quote-message', 'edit-message-as-new'],
@@ -1372,6 +1383,7 @@ export default {
     // updates must not pull the transcript back down until they explicitly
     // return to the latest row or switch sessions.
     const isAtBottom = Vue.ref(true);
+    const activeLongResponseOriginId = Vue.ref('');
     const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
     let loadMoreArmed = true;
@@ -1742,6 +1754,55 @@ export default {
     }
 
     // Scroll handling
+    let responseNavigationRafId = null;
+    let responseNavigationResizeObserver = null;
+    const observedResponseElements = new Set();
+
+    const syncResponseNavigationObservers = (responseElements) => {
+      if (!responseNavigationResizeObserver) return;
+      const nextElements = new Set(responseElements);
+      for (const element of observedResponseElements) {
+        if (nextElements.has(element)) continue;
+        responseNavigationResizeObserver.unobserve(element);
+        observedResponseElements.delete(element);
+      }
+      for (const element of nextElements) {
+        if (observedResponseElements.has(element)) continue;
+        responseNavigationResizeObserver.observe(element);
+        observedResponseElements.add(element);
+      }
+    };
+
+    const updateResponseNavigation = () => {
+      responseNavigationRafId = null;
+      const container = containerRef.value;
+      if (!container) {
+        activeLongResponseOriginId.value = '';
+        return;
+      }
+      const viewport = container.getBoundingClientRect?.();
+      const responseEls = Array.from(container.querySelectorAll?.('[data-response-origin-id]') || []);
+      syncResponseNavigationObservers(responseEls);
+      activeLongResponseOriginId.value = resolveLongResponseOrigin({
+        viewportTop: viewport?.top || 0,
+        viewportHeight: container.clientHeight || viewport?.height || 0,
+        responses: responseEls.map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            originMessageId: element.dataset?.responseOriginId || '',
+            top: rect.top,
+            bottom: rect.bottom,
+            height: rect.height,
+          };
+        }),
+      });
+    };
+
+    const scheduleResponseNavigationUpdate = () => {
+      if (responseNavigationRafId != null) return;
+      responseNavigationRafId = requestAnimationFrame(updateResponseNavigation);
+    };
+
     const checkIfAtBottom = () => {
       if (!containerRef.value) return true;
       const { scrollTop, scrollHeight, clientHeight } = containerRef.value;
@@ -1836,6 +1897,7 @@ export default {
       virtualTranscriptRef.value?.setBottomFollowEnabled?.(isAtBottom.value);
       if (!userScrollInteractionActive) lastObservedScrollTop = Number(scrollTop || 0);
       maybeLoadMoreNearTop(scrollTop || 0, clientHeight || 0);
+      scheduleResponseNavigationUpdate();
     };
 
     const preserveScrollAnchorDuringLoad = (loadFn, loadingRef) => {
@@ -1970,6 +2032,7 @@ export default {
           containerRef.value.clientHeight || 0,
         );
       }
+      scheduleResponseNavigationUpdate();
     };
 
     const scrollToBottom = () => {
@@ -2043,7 +2106,10 @@ export default {
       { immediate: true }
     );
 
-    Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);
+    Vue.watch(visibleTranscriptTailSignature, () => {
+      smartScrollToBottom();
+      Vue.nextTick(scheduleResponseNavigationUpdate);
+    });
     Vue.watch(previewShowTypingDots, (show) => { if (show) smartScrollToBottom(); });
     // Reset local transcript state only when the user actually navigates to a
     // different conversation. Yeaft history loading may replace the transport
@@ -2072,6 +2138,7 @@ export default {
       if (!originMessageId) return false;
       const block = messageBlocks.value.find(item => item?.originMessageId === originMessageId);
       if (!block?.id) return false;
+      activeLongResponseOriginId.value = '';
       pauseAutoFollow();
       const moved = await virtualTranscriptRef.value?.scrollToKey?.(block.id, { align: 'start' });
       if (!moved) return false;
@@ -2109,7 +2176,11 @@ export default {
     expose({ revealMessage });
 
     Vue.onMounted(() => {
+      if (typeof ResizeObserver !== 'undefined') {
+        responseNavigationResizeObserver = new ResizeObserver(scheduleResponseNavigationUpdate);
+      }
       scrollToBottom();
+      Vue.nextTick(scheduleResponseNavigationUpdate);
       if (containerRef.value) {
         containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });
         containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });
@@ -2131,6 +2202,11 @@ export default {
       window.removeEventListener('pointerup', onPointerScrollEnd);
       window.removeEventListener('pointercancel', onPointerScrollEnd);
       window.removeEventListener('keydown', onScrollKey);
+      if (responseNavigationRafId != null) cancelAnimationFrame(responseNavigationRafId);
+      responseNavigationRafId = null;
+      responseNavigationResizeObserver?.disconnect();
+      responseNavigationResizeObserver = null;
+      observedResponseElements.clear();
       clearUserScrollInteraction();
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
       if (typingHideTimer) { clearTimeout(typingHideTimer); typingHideTimer = null; }
@@ -2196,6 +2272,7 @@ export default {
       onClickLoadMore,
       onVirtualTranscriptScrollState,
       isAtBottom,
+      activeLongResponseOriginId,
       scrollToLatest,
     };
   }
