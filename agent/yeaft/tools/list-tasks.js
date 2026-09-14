@@ -18,6 +18,9 @@ export function compactTaskSnapshot(task) {
     updatedAt: task.updatedAt,
     ...(runtime.subAgentId ? { agentId: runtime.subAgentId } : {}),
     ...(log.path ? { logPath: log.path } : {}),
+    ...(runtime.cancelRequestedAt ? { cancelPending: true } : {}),
+    ...(runtime.cancelEscalatedAt ? { cancelEscalated: true } : {}),
+    ...(runtime.cancelEscalationFailed ? { cancelEscalationFailed: true } : {}),
   };
 }
 
@@ -48,7 +51,7 @@ export default defineTool({
     return JSON.stringify({
       tasks,
       next_steps: tasks.length > 0
-        ? 'Use ReadTaskLog with a task id when its output is needed; use CancelTask only when cancellation is intended.'
+        ? 'ReadTaskLog reads output by task id. For sub_agent tasks use WaitAgent/CloseAgent with agentId to collect/cancel; for shell tasks use CancelTask only when cancellation is intended. cancelPending is not proof the process has stopped.'
         : 'No active tasks require follow-up.',
     });
   },

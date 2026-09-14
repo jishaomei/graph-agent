@@ -685,6 +685,7 @@ describe('compact status projections', () => {
       usage: { turns: 3, llmCalls: 4, startedAt: Date.now() },
       execution: { toolCalls: 2, completedCalls: 2, failedCalls: 0,
         repeatedResults: 0, recentCalls: [], warning: null },
+      budget: { max_tool_calls: 10, max_llm_calls: 20 }, allowTools: ['Bash'], controlRevision: 2,
       liveness, parentSessionId: 'session-compact', parentVpId: 'vp-compact',
     });
     const result = JSON.parse(await listAgents.execute({}, {
@@ -695,6 +696,9 @@ describe('compact status projections', () => {
       id: 'agent-compact', status: STATUS.RUNNING, outputFile: '/tmp/compact.log',
       usage: { toolExecutions: 2, llmRequests: 4, providerTokens: 10, turns: 3 },
       activity: { outputChars: 14 }, hasResult: true,
+      control: { limits: { max_tool_calls: 10, max_llm_calls: 20 },
+        remainingToolCalls: 8, remainingLlmCalls: 16, remainingWallTimeMs: null,
+        reportingLlmCalls: 0, allowTools: ['Bash'], controlRevision: 2 },
     });
     expect(result.agents[0].task).toHaveLength(200);
     for (const key of ['result', 'resultTail', 'messages', 'createdAt', 'liveness', 'lastEventAt', 'stalled']) {
@@ -720,6 +724,12 @@ describe('compact status projections', () => {
       resultDelivery: 'status_only', updatedAt: 123, agentId: 'agent-1', logPath: '/tmp/task-1.log',
     }]);
     expect(result.next_steps).toMatch(/ReadTaskLog/);
+    expect(result.next_steps).toMatch(/sub_agent tasks use WaitAgent\/CloseAgent/);
+    const shell = { ...full, kind: 'shell', runtime: { cancelRequestedAt: 'now', cancelEscalatedAt: 'later', cancelEscalationFailed: true } };
+    taskManager.listActiveTasks.mockReturnValueOnce([shell]);
+    const cancelling = JSON.parse(await listTasks.execute({}, { taskManager, sessionId: 'session-1' }));
+    expect(cancelling.tasks[0]).toMatchObject({ cancelPending: true, cancelEscalated: true, cancelEscalationFailed: true });
+    expect(cancelling.next_steps).toMatch(/shell tasks use CancelTask/);
     expect(full.runtime.cwd).toBe('/private/worktree');
     expect(full.log.content).toBe('very long log');
     expect(JSON.stringify(result)).not.toMatch(/private|very long|pid/);

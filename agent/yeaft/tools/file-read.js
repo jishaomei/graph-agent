@@ -169,7 +169,9 @@ Guidelines:
   },
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
-  cacheWithinQuery: true,
+  // The workspace may change outside this Engine (editor, process, peer).
+  // Observation hints must describe a fresh read, never a cached snapshot.
+  cacheWithinQuery: false,
   async execute(input, ctx) {
     const { file_path, offset = 0, column_offset = 0, limit = DEFAULT_LIMIT } = input;
     if (!file_path) return JSON.stringify({ error: 'file_path is required' });

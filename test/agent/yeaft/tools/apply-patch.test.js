@@ -1,12 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
   mkdtempSync,
+  symlinkSync,
+  unlinkSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import * as fsp from 'fs/promises';
+const { mkdir: actualMkdir } = await vi.importActual('fs/promises');
+
+vi.mock('fs/promises', async importOriginal => {
+  const actual = await importOriginal();
+  return { ...actual, mkdir: vi.fn(actual.mkdir) };
+});
 import { tmpdir } from 'node:os';
 import applyPatch, { parsePatch } from '../../../../agent/yeaft/tools/apply-patch.js';
 
@@ -22,6 +31,8 @@ describe('ApplyPatch', () => {
   });
 
   afterEach(() => {
+    vi.resetAllMocks();
+    fsp.mkdir.mockImplementation(actualMkdir);
     rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -211,7 +222,11 @@ describe('ApplyPatch', () => {
 
   it('reports the non-transactional boundary when a write fails after validation', async () => {
     writeFileSync(join(cwd, 'first.txt'), 'one\n');
-    writeFileSync(join(cwd, 'blocked'), 'not a directory\n');
+    const mkdir = actualMkdir;
+    fsp.mkdir.mockImplementation(async (dir, options) => {
+      if (dir === join(cwd, 'blocked')) throw new Error('simulated I/O failure');
+      return mkdir(dir, options);
+    });
 
     const result = parseResult(await applyPatch.execute({
       patch: [
@@ -264,6 +279,75 @@ describe('ApplyPatch', () => {
     }, { cwd }));
     expect(result.success).toBe(true);
     expect(readFileSync(join(cwd, 'large.txt'), 'utf8')).toBe('line\n'.repeat(149999) + 'last\n');
+  });
+
+  it('preserves mixed line terminators outside and inside hunk context', async () => {
+    writeFileSync(join(cwd, 'mixed.txt'), 'one\r\ntwo\nthree\r\n');
+    const result = parseResult(await applyPatch.execute({
+      patch: '--- a/mixed.txt\n+++ b/mixed.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n',
+    }, { cwd }));
+    expect(result.success).toBe(true);
+    expect(readFileSync(join(cwd, 'mixed.txt'), 'utf8')).toBe('one\r\nTWO\nthree\r\n');
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects target and ancestor symlinks without changing any source', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'yeaft-patch-outside-'));
+    try {
+      writeFileSync(join(outside, 'victim'), 'old\n');
+      symlinkSync(outside, join(cwd, 'link'));
+      symlinkSync(join(outside, 'victim'), join(cwd, 'file-link'));
+      for (const file of ['link/victim', 'file-link']) {
+        const result = parseResult(await applyPatch.execute({
+          patch: `--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old\n+new\n`,
+        }, { cwd }));
+        expect(result.errorEffect).toBe('none');
+        expect(result.error).toMatch(/Symbolic link/);
+        expect(readFileSync(join(outside, 'victim'), 'utf8')).toBe('old\n');
+      }
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === 'win32')('rechecks symlink replacement between validation and writing', async () => {
+    writeFileSync(join(cwd, 'victim'), 'old\n');
+    writeFileSync(join(cwd, 'untouched'), 'external\n');
+    const mkdir = actualMkdir;
+    fsp.mkdir.mockImplementationOnce(async (...args) => {
+      unlinkSync(join(cwd, 'victim'));
+      symlinkSync(join(cwd, 'untouched'), join(cwd, 'victim'));
+      return mkdir(...args);
+    });
+    const result = parseResult(await applyPatch.execute({
+      patch: '--- a/victim\n+++ b/victim\n@@ -1 +1 @@\n-old\n+new\n',
+    }, { cwd }));
+    expect(result.error).toMatch(/Symbolic link/);
+    expect(readFileSync(join(cwd, 'untouched'), 'utf8')).toBe('external\n');
+  });
+
+  it('keeps newline removal, blank files and pure insertion semantics exact', async () => {
+    for (const [before, patch, after] of [
+      ['old\n', '@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n', 'new'],
+      ['\n', '@@ -1 +1 @@\n-\n+filled\n', 'filled\n'],
+      ['one\r\n', '@@ -1,0 +2 @@\n+two\n', 'one\r\ntwo\r\n'],
+      ['one\n', '@@ -0,0 +1 @@\n+zero\n', 'zero\none\n'],
+    ]) {
+      writeFileSync(join(cwd, 'eol.txt'), before);
+      const result = parseResult(await applyPatch.execute({ patch: '--- a/eol.txt\n+++ b/eol.txt\n' + patch }, { cwd }));
+      expect(result.success).toBe(true);
+      expect(readFileSync(join(cwd, 'eol.txt'), 'utf8')).toBe(after);
+    }
+  });
+
+  it('does not overwrite a file externally changed after prevalidation', async () => {
+    writeFileSync(join(cwd, 'victim'), 'old\n');
+    fsp.mkdir.mockImplementationOnce(async (...args) => {
+      writeFileSync(join(cwd, 'victim'), 'external\n');
+      return actualMkdir(...args);
+    });
+    const result = parseResult(await applyPatch.execute({
+      patch: '--- a/victim\n+++ b/victim\n@@ -1 +1 @@\n-old\n+new\n',
+    }, { cwd }));
+    expect(result.error).toMatch(/content changed after validation/);
+    expect(readFileSync(join(cwd, 'victim'), 'utf8')).toBe('external\n');
   });
 
   it('reports no filesystem effect for full-patch parse failures', () => {

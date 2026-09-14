@@ -376,6 +376,26 @@ describe('tool efficiency contracts', () => {
       .not.toContain('Previously returned');
   });
 
+  it('re-reads a file changed outside the Engine between identical calls', async () => {
+    writeFileSync(join(root, 'external.txt'), 'first');
+    const input = { file_path: 'external.txt' };
+    const fixture = nativeFixture([
+      [toolItem('before', 'FileRead', input)],
+      [toolItem('after', 'FileRead', input)],
+      [textItem('Observed the current content.')],
+    ], { tools: [fileRead] });
+    const events = [];
+    for await (const event of fixture.makeEngine().query({ prompt: 'Read external.txt twice.', workDir: root })) {
+      events.push(event);
+      if (event.type === 'tool_end' && event.id === 'before') writeFileSync(join(root, 'external.txt'), 'second');
+    }
+    assertSuccessfulTurn(events);
+    const after = events.find(event => event.type === 'tool_end' && event.id === 'after');
+    expect(after.output).toContain('second');
+    expect(after.output).not.toContain('Previously returned');
+    expect(after.reused).not.toBe(true);
+  });
+
   it('keeps both ends of large shell output but never changes its raw persistence value', () => {
     const raw = 'START\n' + '中'.repeat(30000) + '\nFINAL TEST FAILURE';
     for (const language of ['en', 'zh']) {

@@ -7,8 +7,8 @@
  */
 
 import { defineTool } from './types.js';
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { readFile, mkdir, lstat, realpath, open } from 'fs/promises';
+import { existsSync, constants } from 'fs';
 import { dirname, posix, resolve, win32 } from 'path';
 
 const NO_NEWLINE_MARKER = '\\ No newline at end of file';
@@ -260,27 +260,23 @@ export function parsePatch(patch) {
 }
 
 function splitFileContent(content) {
-  const eol = content.includes('\r\n') ? '\r\n' : '\n';
-  const normalized = eol === '\r\n' ? content.replaceAll('\r\n', '\n') : content;
-  const endsWithNewline = normalized.endsWith('\n');
-  if (normalized === '') return { lines: [], endsWithNewline: false, eol };
-  return {
-    lines: (endsWithNewline ? normalized.slice(0, -1) : normalized).split('\n'),
-    endsWithNewline,
-    eol,
-  };
-}
-
-function joinFileContent(lines, endsWithNewline, eol) {
-  if (lines.length === 0) return '';
-  return lines.join(eol) + (endsWithNewline ? eol : '');
+  const lines = [];
+  const terminators = [];
+  const pattern = /([^\n]*)(\n|$)/g;
+  for (const match of content.matchAll(pattern)) {
+    if (!match[0]) break;
+    const crlf = match[2] && match[1].endsWith('\r');
+    lines.push(crlf ? match[1].slice(0, -1) : match[1]);
+    terminators.push(crlf ? '\r\n' : match[2]);
+  }
+  return { lines, terminators, endsWithNewline: content.endsWith('\n'),
+    eol: terminators.find(Boolean) || '\n' };
 }
 
 function applyHunks(content, fileDiff) {
   const source = splitFileContent(content);
   const output = [];
   let cursor = 0;
-  let outputEndsWithNewline = source.endsWithNewline;
 
   for (const hunk of fileDiff.hunks) {
     const start = oldLineIndex(hunk);
@@ -288,6 +284,9 @@ function applyHunks(content, fileDiff) {
       throw new Error(`Hunk source range is outside ${fileDiff.file}`);
     }
 
+    if (hunk.oldCount === 0 && start > 0 && !source.terminators[start - 1]) {
+      throw new Error(`Insertion after an unterminated line requires replacing that line in ${fileDiff.file}`);
+    }
     const actual = source.lines.slice(start, start + hunk.oldCount);
     for (let index = 0; index < hunk.oldLines.length; index++) {
       if (actual[index] !== hunk.oldLines[index]) {
@@ -309,21 +308,100 @@ function applyHunks(content, fileDiff) {
     if (hunk.newNoNewline && (!oldTouchesEof || hunk !== fileDiff.hunks.at(-1))) {
       throw new Error(`New no-newline marker must describe the final output line in ${fileDiff.file}`);
     }
-    // Do not spread a large unchanged prefix into a function call (argument limits).
-    for (const line of source.lines.slice(cursor, start)) output.push(line);
-    for (const line of hunk.newLines) output.push(line);
+    // Preserve every untouched line's terminator, including mixed LF/CRLF.
+    for (let index = cursor; index < start; index++) {
+      output.push(source.lines[index] + source.terminators[index]);
+    }
+    let oldCursor = start;
+    for (const entry of hunk.lines) {
+      if (entry.type === ' ') {
+        output.push(source.lines[oldCursor] + source.terminators[oldCursor]);
+        oldCursor++;
+      } else if (entry.type === '-') {
+        oldCursor++;
+      } else {
+        const eol = source.terminators[Math.max(start, oldCursor - 1)]
+          || source.terminators[oldCursor] || source.eol;
+        output.push(entry.text + (entry.noNewline ? '' : eol));
+      }
+    }
     cursor = start + hunk.oldCount;
-    if (oldTouchesEof) outputEndsWithNewline = !hunk.newNoNewline;
   }
 
-  for (const line of source.lines.slice(cursor)) output.push(line);
-  return joinFileContent(output, outputEndsWithNewline, source.eol);
+  for (let index = cursor; index < source.lines.length; index++) {
+    output.push(source.lines[index] + source.terminators[index]);
+  }
+  return output.join('');
+}
+
+// Lexical containment is checked by parsePatch. Reject symlinks at every
+// existing component, and remember identities to detect changes before I/O.
+// These checks are not an OS sandbox against hostile concurrent directory swaps.
+async function inspectTarget(cwd, file) {
+  const parts = file.split('/');
+  const identities = [];
+  let current = cwd;
+  for (let index = -1; index < parts.length; index++) {
+    if (index >= 0) current = resolve(current, parts[index]);
+    let info;
+    try { info = await lstat(current); }
+    catch (error) { if (error.code === 'ENOENT') break; throw error; }
+    if (info.isSymbolicLink()) throw new Error(`Symbolic link target is not supported: ${file}`);
+    if (index < parts.length - 1 && !info.isDirectory()) {
+      throw new Error(`Patch parent is not a directory: ${file}`);
+    }
+    if (index === parts.length - 1 && !info.isFile()) throw new Error(`Patch target is not a regular file: ${file}`);
+    identities.push({ path: current, dev: info.dev, ino: info.ino });
+  }
+  return identities;
+}
+
+async function verifyTarget(cwd, plan) {
+  const current = await inspectTarget(cwd, plan.file);
+  for (const old of plan.identities) {
+    if (!current.some(now => now.path === old.path && now.dev === old.dev && now.ino === old.ino)) {
+      throw new Error(`Patch target changed after validation: ${plan.file}`);
+    }
+  }
+  return current;
+}
+
+async function writePlan(cwd, plan, signal) {
+  if (signal?.aborted) throw new Error('Patch cancelled before write');
+  await verifyTarget(cwd, plan);
+  await mkdir(dirname(plan.absPath), { recursive: true });
+  await verifyTarget(cwd, plan);
+  const flags = plan.oldFile == null ? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+    : constants.O_RDWR | (constants.O_NOFOLLOW || 0);
+  const handle = await open(plan.absPath, flags, 0o666);
+  try {
+    const identities = await verifyTarget(cwd, plan);
+    const opened = await handle.stat();
+    const target = identities.at(-1);
+    if (!opened.isFile() || target?.dev !== opened.dev || target?.ino !== opened.ino) {
+      throw new Error(`Patch target replaced during open: ${plan.file}`);
+    }
+    if (plan.oldFile != null && await handle.readFile('utf8') !== plan.original) {
+      throw new Error(`Patch content changed after validation: ${plan.file}`);
+    }
+    await verifyTarget(cwd, plan);
+    if (signal?.aborted) throw new Error('Patch cancelled before write');
+    const bytes = Buffer.from(plan.content, 'utf8');
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+      if (!bytesWritten) throw new Error('Patch write made no progress');
+      offset += bytesWritten;
+    }
+    await handle.truncate(bytes.length);
+  } finally { await handle.close(); }
 }
 
 async function preparePatch(cwd, fileDiffs) {
   const plans = [];
   for (const fileDiff of fileDiffs) {
     const absPath = resolve(cwd, fileDiff.file);
+    const identities = await inspectTarget(cwd, fileDiff.file);
     const exists = existsSync(absPath);
     if (fileDiff.oldFile == null && exists) {
       throw new Error(`New file already exists: ${fileDiff.file}`);
@@ -336,6 +414,8 @@ async function preparePatch(cwd, fileDiffs) {
     plans.push({
       ...fileDiff,
       absPath,
+      identities,
+      original: content,
       content: applyHunks(content, fileDiff),
     });
   }
@@ -353,6 +433,7 @@ Guidelines:
 - Provide standard unified diff format (--- a/file, +++ b/file, @@ hunks)
 - Include exact current context; stale or malformed patches make no changes
 - Use one file header with multiple ordered hunks for several edits in a file
+- Symlink targets/ancestors are rejected and checked again before writing; this is not a sandbox against hostile concurrent filesystem mutation
 - Validation is all-or-nothing, but filesystem writes are not transactional: a runtime I/O failure can leave earlier files changed and the failed file partially written`,
     zh: `将标准 unified diff 补丁应用到一个或多个文件。
 
@@ -362,6 +443,7 @@ Guidelines:
 - 提供标准 unified diff 格式（--- a/file、+++ b/file、@@ 块）
 - 上下文必须与当前内容精确一致；过时或畸形补丁不会产生修改
 - 同一文件的多处编辑使用一个文件头和多个有序块
+- 拒绝符号链接目标和祖先，写入前再次检查；这不等同于防御恶意并发文件系统修改的 sandbox
 - 验证是全有或全无的，但文件系统写入不是事务：运行时 I/O 失败可能保留之前已写入的文件，失败文件也可能只写入一部分`
   },
   parameters: {
@@ -384,10 +466,12 @@ Guidelines:
     const { patch } = input;
     if (!patch) return JSON.stringify({ errorEffect: 'none', error: 'patch is required' });
 
-    const cwd = ctx?.cwd || process.cwd();
+    let cwd;
     let plans;
     try {
-      plans = await preparePatch(cwd, parsePatch(patch));
+      const parsed = parsePatch(patch);
+      cwd = await realpath(ctx?.cwd || process.cwd());
+      plans = await preparePatch(cwd, parsed);
     } catch (err) {
       return JSON.stringify({
         errorEffect: 'none',
@@ -399,8 +483,7 @@ Guidelines:
     for (let index = 0; index < plans.length; index++) {
       const plan = plans[index];
       try {
-        await mkdir(dirname(plan.absPath), { recursive: true });
-        await writeFile(plan.absPath, plan.content, 'utf8');
+        await writePlan(cwd, plan, ctx?.signal);
         results.push({ file: plan.file, success: true, hunks: plan.hunks.length });
       } catch (err) {
         return JSON.stringify({
