@@ -197,6 +197,15 @@ function formatSuccess(operation, result) {
 // Engine uses this envelope (not text exit codes) for tool_end.isError.
 function boundedFailure(fields, output = '') {
   const envelope = { ...fields, ...(output ? { output: String(output) } : {}) };
+  // Metadata is not necessarily small: even an invalid cwd reaches spawn.
+  // Bound each string after allowing for JSON's worst-case 6x escaping;
+  // the fixed envelope fields then leave ample room for diagnostics.
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === 'string' && Buffer.byteLength(value, 'utf8') > 512) {
+      envelope[key] = takeUtf8(value, 512) + '[truncated]';
+      envelope.truncated = true;
+    }
+  }
   let serialized = JSON.stringify(envelope);
   const marker = '\n[GitRead diagnostic truncated; narrow the revision or paths.]';
   if (Buffer.byteLength(serialized, 'utf8') > MAX_RESULT_BYTES) {

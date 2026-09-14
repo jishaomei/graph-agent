@@ -148,6 +148,15 @@ describe('GitRead execution', () => {
     expect(formatted).toContain('[Output truncated by GitRead;');
     expect(formatted).not.toContain('\uFFFD');
 
+    for (const cwd of ['/' + 'x'.repeat(40_000), '/' + '\u0001\"\\改'.repeat(4000)]) {
+      const failure = formatGitReadResult('log', { code: 128, stderr: 'fatal' }, { resolvedCwd: cwd });
+      expect(Buffer.byteLength(failure)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+      expect(JSON.parse(failure)).toMatchObject({ code: 'git_failed', truncated: true });
+      expect(JSON.parse(failure).resolvedCwd).toContain('[truncated]');
+      expect(isToolErrorOutput(truncateToolResultIfNeeded(failure))).toBe(true);
+      expect(failure).not.toContain('\uFFFD');
+    }
+
     const runnerLimited = formatGitReadResult('show', {
       code: 143,
       stdout: 'partial',
@@ -328,6 +337,13 @@ describe('GitRead execution', () => {
         expect(runProcessImpl).toHaveBeenCalledOnce();
       }
     }
+    // Real spawn failure with oversized metadata, not just a formatter mock.
+    const invalidCwd = '/' + 'x'.repeat(40_000);
+    const oversizedCwdFailure = await gitRead.execute({ operation: 'log' }, { cwd: invalidCwd });
+    expect(Buffer.byteLength(oversizedCwdFailure)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(JSON.parse(oversizedCwdFailure)).toMatchObject({ code: 'git_execution_error', truncated: true });
+    expect(isToolErrorOutput(truncateToolResultIfNeeded(oversizedCwdFailure))).toBe(true);
+
     const abort = Object.assign(new Error('cancelled'), { name: 'AbortError' });
     for (const operation of ['status', 'show', 'log']) {
       const runProcessImpl = vi.fn().mockRejectedValue(abort);
