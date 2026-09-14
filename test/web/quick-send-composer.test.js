@@ -100,34 +100,54 @@ describe('Agent quick-send Composer', () => {
     expect(sendFn).toHaveBeenLastCalledWith('normal', undefined, quote);
   });
 
-  it('only sends the current Agent slot and preserves draft on rejection/offline', async () => {
+  it('only consumes an available current-Agent slot and preserves draft on rejection/offline', async () => {
     const sendFn = vi.fn(() => false);
     await create({ sendFn });
-    await wrapper.get('textarea').setValue('keep');
-    await wrapper.get('textarea').trigger('keydown', { key: 'e', ctrlKey: true });
+    const input = wrapper.get('textarea');
+    await input.setValue('keep');
+    const accepted = new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true, cancelable: true });
+    input.element.dispatchEvent(accepted);
+    expect(accepted.defaultPrevented).toBe(true);
     expect(sendFn).toHaveBeenCalledTimes(1);
-    expect(wrapper.get('textarea').element.value).toBe('keep');
+    expect(input.element.value).toBe('keep');
+
     store.connectionState = 'reconnecting';
     await Vue.nextTick();
-    await wrapper.get('textarea').trigger('keydown', { key: 'e', ctrlKey: true });
+    const offline = new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true, cancelable: true });
+    input.element.dispatchEvent(offline);
+    expect(offline.defaultPrevented).toBe(false);
     expect(sendFn).toHaveBeenCalledTimes(1);
+
     store.currentAgent = 'a2';
+    store.connectionState = 'connected';
     await Vue.nextTick();
     expect(wrapper.find('.composer-send-modes').exists()).toBe(false);
     expect(wrapper.find('.composer-send-mode-trigger').exists()).toBe(false);
-    await wrapper.get('textarea').trigger('keydown', { key: 'e', ctrlKey: true });
+    const unconfigured = new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true, cancelable: true });
+    input.element.dispatchEvent(unconfigured);
+    expect(unconfigured.defaultPrevented).toBe(false);
     expect(sendFn).toHaveBeenCalledTimes(1);
   });
 
-  it('does not send on IME, repeat, empty input, or an unconfigured slot', async () => {
+  it('does not consume IME, repeat, empty-input, or unconfigured-slot shortcuts', async () => {
     const sendFn = vi.fn();
     await create({ sendFn });
     const input = wrapper.get('textarea');
-    await input.trigger('keydown', { key: 'e', ctrlKey: true });
+    const dispatch = extra => {
+      const event = new KeyboardEvent('keydown', {
+        key: extra.key, ctrlKey: extra.ctrlKey, repeat: extra.repeat,
+        bubbles: true, cancelable: true,
+      });
+      if (extra.isComposing) Object.defineProperty(event, 'isComposing', { value: true });
+      input.element.dispatchEvent(event);
+      return event;
+    };
+
+    expect(dispatch({ key: 'e', ctrlKey: true }).defaultPrevented).toBe(false);
     await input.setValue('safe');
-    await input.trigger('keydown', { key: 'e', ctrlKey: true, isComposing: true });
-    await input.trigger('keydown', { key: 'e', ctrlKey: true, repeat: true });
-    await input.trigger('keydown', { key: 'j', ctrlKey: true });
+    expect(dispatch({ key: 'e', ctrlKey: true, isComposing: true }).defaultPrevented).toBe(false);
+    expect(dispatch({ key: 'e', ctrlKey: true, repeat: true }).defaultPrevented).toBe(false);
+    expect(dispatch({ key: 'j', ctrlKey: true }).defaultPrevented).toBe(false);
     expect(sendFn).not.toHaveBeenCalled();
     expect(input.element.value).toBe('safe');
   });

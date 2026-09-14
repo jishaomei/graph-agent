@@ -862,10 +862,13 @@ export default {
       if (e.isComposing || e.keyCode === 229) return;
       if (!e.defaultPrevented && props.quickSendEnabled) {
         const slot = [1, 2, 3, 4, 5].find(number => matchShortcut(e, shortcutPreferences.value.bindings[`quickSend${number}`]));
-        if (slot) {
+        const preset = slot ? quickSends.value[slot - 1] : null;
+        // An unconfigured or currently unavailable quick-send shortcut is inert:
+        // do not consume Alt+1..5 unless this keypress can actually send.
+        if (!e.repeat && preset && canQuickSend.value) {
           e.preventDefault();
           e.stopPropagation();
-          if (!e.repeat && quickSends.value[slot - 1]) sendQuick(quickSends.value[slot - 1]);
+          sendQuick(preset);
           return;
         }
       }
