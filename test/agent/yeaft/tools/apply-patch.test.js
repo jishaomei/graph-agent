@@ -237,6 +237,35 @@ describe('ApplyPatch', () => {
     expect(readFileSync(join(cwd, 'first.txt'), 'utf8')).toBe('ONE\n');
   });
 
+  it('rejects unsupported creation modes and non-EOF newline markers before writing', async () => {
+    writeFileSync(join(cwd, 'file.txt'), 'old\nlast\n');
+    const misplaced = parseResult(await applyPatch.execute({
+      patch: '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n',
+    }, { cwd }));
+    expect(misplaced.error).toMatch(/final output line/);
+    expect(readFileSync(join(cwd, 'file.txt'), 'utf8')).toBe('old\nlast\n');
+    for (const mode of ['100755', '120000', '160000']) {
+      const result = parseResult(await applyPatch.execute({
+        patch: `diff --git a/new.txt b/new.txt\nnew file mode ${mode}\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n`,
+      }, { cwd }));
+      expect(result.errorEffect).toBe('none');
+      expect(result.error).toMatch(/mode changes are not applied/);
+      expect(existsSync(join(cwd, 'new.txt'))).toBe(false);
+    }
+    expect(() => parsePatch('--- a/file.txt\n+++ b/file.txt\n@@ -999999999999999999999 +1 @@\n-old\n+new\n'))
+      .toThrow(/safe integers/);
+  });
+
+  it('applies a small hunk without spreading a large unchanged file into function arguments', async () => {
+    const source = 'line\n'.repeat(150000);
+    writeFileSync(join(cwd, 'large.txt'), source);
+    const result = parseResult(await applyPatch.execute({
+      patch: '--- a/large.txt\n+++ b/large.txt\n@@ -150000 +150000 @@\n-line\n+last\n',
+    }, { cwd }));
+    expect(result.success).toBe(true);
+    expect(readFileSync(join(cwd, 'large.txt'), 'utf8')).toBe('line\n'.repeat(149999) + 'last\n');
+  });
+
   it('reports no filesystem effect for full-patch parse failures', () => {
     expect(() => parsePatch(
       '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new\ntrailing garbage\n',

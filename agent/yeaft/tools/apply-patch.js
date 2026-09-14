@@ -56,6 +56,9 @@ function parseHunkHeader(line, lineNumber) {
     newCount: match[4] == null ? 1 : Number.parseInt(match[4], 10),
     lines: [],
   };
+  if (![hunk.oldStart, hunk.oldCount, hunk.newStart, hunk.newCount].every(Number.isSafeInteger)) {
+    throw patchError('Hunk ranges must be safe integers', lineNumber);
+  }
   if (hunk.oldStart === 0 && hunk.oldCount !== 0) {
     throw patchError('A non-empty old range must start at line 1 or later', lineNumber);
   }
@@ -140,6 +143,9 @@ export function parsePatch(patch) {
       while (i < lines.length) {
         const metadata = lines[i].replace(/\r$/, '');
         if (/^new file mode \d+$/.test(metadata)) {
+          if (metadata !== 'new file mode 100644') {
+            throw patchError('Only regular non-executable new files are supported; mode changes are not applied', i + 1);
+          }
           if (hasNewFileMode || hasIndex) {
             throw patchError('Misplaced or duplicate new file mode header', i + 1);
           }
@@ -300,12 +306,17 @@ function applyHunks(content, fileDiff) {
       throw new Error(`Expected a newline at end of ${fileDiff.file}`);
     }
 
-    output.push(...source.lines.slice(cursor, start), ...hunk.newLines);
+    if (hunk.newNoNewline && (!oldTouchesEof || hunk !== fileDiff.hunks.at(-1))) {
+      throw new Error(`New no-newline marker must describe the final output line in ${fileDiff.file}`);
+    }
+    // Do not spread a large unchanged prefix into a function call (argument limits).
+    for (const line of source.lines.slice(cursor, start)) output.push(line);
+    for (const line of hunk.newLines) output.push(line);
     cursor = start + hunk.oldCount;
     if (oldTouchesEof) outputEndsWithNewline = !hunk.newNoNewline;
   }
 
-  output.push(...source.lines.slice(cursor));
+  for (const line of source.lines.slice(cursor)) output.push(line);
   return joinFileContent(output, outputEndsWithNewline, source.eol);
 }
 
