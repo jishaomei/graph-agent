@@ -65,7 +65,7 @@ import { lookupModelLimitSync } from './llm/models-dev.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens, computeBudget } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, isToolErrorOutput, localizeVisibleText, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, toolValidationError, localizeVisibleText, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
 import { CONDITIONAL_BUILTIN_TOOL_NAMES, resolveActiveToolNames } from './tools/activation.js';
 import { discoverToolCapabilities } from './tools/discover-tools.js';
 import { agentBelongsToScope, getAgentRegistry } from './tools/agent.js';
@@ -2530,6 +2530,8 @@ export class Engine {
     // executions increment these counters; errors and cache reuse do not.
     const queryDuplicateCounts = new Map();
     const queryDuplicateSuppressions = new Map();
+    const queryValidationFailures = new Map();
+    const fileReadObservations = new Map();
     let duplicateReminderAwaitingResponse = false;
     const queryNumber = (this.#__queryCounter = (this.#__queryCounter || 0) + 1);
 
@@ -4281,6 +4283,7 @@ export class Engine {
         };
         return {
           ...toolCtx,
+          fileReadObservations,
           currentToolCall: () => ({ ...stableToolCall }),
           askUser: typeof askUser === 'function'
             ? input => askUser(input, { ...stableToolCall })
@@ -4654,6 +4657,15 @@ export class Engine {
               lastResultBrief: dupInfo.lastResultBrief,
             }));
           }
+        }
+        const validationError = isError && !skipped ? toolValidationError(output) : null;
+        if (validationError) {
+          const key = `${duplicateCallKey}:${validationError}`;
+          const count = (queryValidationFailures.get(key) || 0) + 1;
+          queryValidationFailures.set(key, count);
+          if (count === 2) pendingDupReminders.push(
+            `[system note] ${tc.name} rejected the same arguments twice before execution: ${validationError.slice(0, 300)}. Correct the arguments using its schema/error hint or choose a different tool. No operation was performed; repeating unchanged arguments will not help.`,
+          );
         }
         const toolDurationMs = readyParallelExecution?.durationMs ?? (Date.now() - toolStartTime);
 

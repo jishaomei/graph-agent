@@ -37,6 +37,23 @@ describe('sub-agent execution control', () => {
     }
   });
 
+  it('executes beyond former defaults when no lifetime budget was requested', async () => {
+    const agent = record();
+    agent.usage.startedAt = Date.now() - 20 * 60 * 1000;
+    const child = new SubAgentToolRegistry({ agent }).register(readTool());
+    for (let index = 0; index < 140; index++) {
+      child.reserveProviderRequest();
+      await child.execute('Read', {});
+    }
+    expect(child.prepareProviderRequest()).toBeNull();
+    expect(agent.execution.toolCalls).toBe(140);
+    expect(agent.usage.llmCalls).toBe(140);
+    expect(agent.abortController.signal.aborted).toBe(false);
+    expect(diagnoseAgentLiveness(agent).execution).toMatchObject({
+      remainingToolCalls: null, remainingLlmCalls: null, remainingWallTimeMs: null,
+    });
+  });
+
   it('keeps provider usage, output volume, event count, and actual executions distinct', async () => {
     const liveness = makeLiveness();
     bumpLivenessFromEvent(liveness, { type: 'text_delta', text: 'four' });

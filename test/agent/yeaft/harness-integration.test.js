@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Engine } from '../../../agent/yeaft/engine.js';
@@ -7,7 +7,14 @@ import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { ConversationStore, projectVisibleSessionMessages } from '../../../agent/yeaft/conversation/persist.js';
 import { closeConversationHistoryIndexes } from '../../../agent/yeaft/conversation/history-index.js';
-import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
+import { createBashTool } from '../../../agent/yeaft/tools/bash.js';
+import fileRead from '../../../agent/yeaft/tools/file-read.js';
+import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
+import webFetch from '../../../agent/yeaft/tools/web-fetch.js';
+import { resolveActiveToolNames } from '../../../agent/yeaft/tools/activation.js';
+import exitWorktree from '../../../agent/yeaft/tools/exit-worktree.js';
+import gitRead from '../../../agent/yeaft/tools/git-read.js';
+import { ToolRegistry, truncateToolResultIfNeeded, toolValidationError } from '../../../agent/yeaft/tools/registry.js';
 import { estimateContentTokens, estimateMessageTokens, estimateMessagesTokens, trimSnapshotForBudget } from '../../../agent/yeaft/history-window.js';
 import { createProviderContext, createProviderState, MAX_PROVIDER_STATE_BYTES, replayProviderState } from '../../../agent/yeaft/llm/provider-state.js';
 
@@ -323,5 +330,126 @@ describe('Engine native harness integration', () => {
     expect(wireResults.map(item => item.call_id)).toEqual(['read_one', 'read_two']);
     expect(wireResults.every(item => item.output.includes('shared fixture contents'))).toBe(true);
     expect(fixture.fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('tool efficiency contracts', () => {
+  it('resolves shell cwd against the Session for foreground and background execution', async () => {
+    const child = join(root, 'child');
+    mkdirSync(child);
+    const runProcessImpl = vi.fn(async () => ({ code: 0, stdout: 'ok', stderr: '' }));
+    const tool = createBashTool({ runProcessImpl });
+    const ctx = { cwd: root, runtimePlatform: { platform: 'darwin', isLinux: false,
+      isWindows: false, shellFamily: 'posix', defaultShell: '/bin/sh' } };
+    for (const [cwd, expected] of [['.', root], ['child', child], [child, child], ['', root]]) {
+      await tool.execute({ command: 'pwd', cwd }, ctx);
+      expect(runProcessImpl.mock.lastCall[2].cwd).toBe(expected);
+    }
+    const startShellTask = vi.fn(() => ({ id: 'task-fixture', status: 'running', log: { path: '/log' } }));
+    const output = await tool.execute({ command: 'pwd', cwd: 'child', background: true }, {
+      ...ctx, taskManager: { startShellTask },
+    });
+    expect(startShellTask.mock.lastCall[0].cwd).toBe(child);
+    expect(output).toContain(child);
+    expect(JSON.parse(await exitWorktree.execute({ path: 'child', action: 'keep' }, ctx)).path).toBe(child);
+    await expect(tool.execute({ command: 'pwd', cwd: 'missing' }, ctx)).rejects.toThrow(join(root, 'missing'));
+    runProcessImpl.mockResolvedValueOnce({ code: 2, stdout: '', stderr: 'failed' });
+    expect(await tool.execute({ command: 'exit 2', cwd: '.' }, ctx)).toContain(`Working directory: ${root}`);
+  });
+
+  it('returns file version and overlap hints without suppressing new or changed reads', async () => {
+    const path = join(root, 'sample.txt');
+    writeFileSync(path, 'one\ntwo\nthree\nfour');
+    const ctx = { cwd: root, fileReadObservations: new Map() };
+    const first = await fileRead.execute({ file_path: 'sample.txt', limit: 2 }, ctx);
+    expect(first).toContain('observed version:');
+    expect(first).not.toContain('Previously returned');
+    const overlap = await fileRead.execute({ file_path: 'sample.txt', offset: 1, limit: 2 }, ctx);
+    expect(overlap).toContain('Previously returned unchanged lines in this query: 2-2');
+    expect(overlap).toContain('3\tthree');
+    writeFileSync(path, 'ONE\ntwo\nthree\nfour');
+    const changed = await fileRead.execute({ file_path: 'sample.txt', limit: 2 }, ctx);
+    expect(changed).not.toContain('Previously returned');
+    expect(changed).toContain('1\tONE');
+    expect(await fileRead.execute({ file_path: 'sample.txt', limit: 2 }, { cwd: root, fileReadObservations: new Map() }))
+      .not.toContain('Previously returned');
+  });
+
+  it('keeps both ends of large shell output but never changes its raw persistence value', () => {
+    const raw = 'START\n' + '中'.repeat(30000) + '\nFINAL TEST FAILURE';
+    for (const language of ['en', 'zh']) {
+      const bounded = truncateToolResultIfNeeded(raw, { toolName: 'Bash', language });
+      expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(32 * 1024);
+      expect(bounded).toContain('START');
+      expect(bounded).toContain('FINAL TEST FAILURE');
+      expect(bounded).not.toContain('\uFFFD');
+    }
+    expect(raw.endsWith('FINAL TEST FAILURE')).toBe(true);
+    expect(truncateToolResultIfNeeded('small', { toolName: 'Bash' })).toBe('small');
+    expect(truncateToolResultIfNeeded(raw, { toolName: 'FileRead' })).not.toContain('FINAL TEST FAILURE');
+  });
+
+  it('does not kill verbose commands at the output cap and retains their actual exit and tail', async () => {
+    for (const maxBytes of [0, 1, 32, 128, 4096]) {
+      const result = await runProcess(process.execPath, ['-e',
+        "process.stdout.write('START\\n' + '中'.repeat(10000)); setTimeout(() => { process.stdout.write('\\nFINAL'); process.stderr.write('ERROR'); process.exitCode = 7 }, 20)",
+      ], { cwd: root, maxBytes, outputLimitAction: 'head-tail', timeoutMs: 5000 });
+      expect(result.code).toBe(7);
+      expect(result.timedOut).toBe(false);
+      expect(result.truncated).toBe(true);
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(maxBytes);
+      expect(result.stdout).not.toContain('\uFFFD');
+      if (maxBytes > 32) {
+        expect(result.stdout).toContain('START');
+        expect(result.stdout).toContain('FINAL');
+        expect(result.stderr).toBe('ERROR');
+      }
+    }
+  });
+
+  it('removes site navigation before budgeting while preserving source data and fallback content', async () => {
+    const html = '<script>ignore()</script><nav>MENU '.repeat(1) + 'links '.repeat(500)
+      + '</nav><main>API CONTRACT</main><aside>Important caveat</aside><footer>FOOTER</footer>';
+    const fetch = vi.fn(async () => new Response(html, { headers: { 'content-type': 'text/html' } }));
+    vi.stubGlobal('fetch', fetch);
+    const result = JSON.parse(await webFetch.execute({ url: 'https://example.test/docs', max_length: 100 }, {}));
+    expect(result.content).toContain('API CONTRACT');
+    expect(result.content).toContain('Important caveat');
+    expect(result.content).not.toContain('MENU');
+    expect(result.content).not.toContain('FOOTER');
+    expect(result.truncated).toBe(false);
+    expect(JSON.parse(await webFetch.execute({ url: 'https://example.test/docs', raw: true }, {})).content).toBe(html);
+    fetch.mockImplementationOnce(async () => new Response('<style>body{}</style><nav>Only directory</nav>', {
+      headers: { 'content-type': 'text/html' },
+    }));
+    expect(JSON.parse(await webFetch.execute({ url: 'https://example.test' }, {})).content).toBe('Only directory');
+    fetch.mockImplementationOnce(async () => new Response('{"nav":"data"}', {
+      headers: { 'content-type': 'application/json' },
+    }));
+    expect(JSON.parse(await webFetch.execute({ url: 'https://example.test' }, {})).content).toBe('{"nav":"data"}');
+  });
+
+  it('exposes safe batch editing for explicit code-change intent, not every query', () => {
+    const toolNames = ['FileRead', 'ApplyPatch'];
+    for (const prompt of ['fix the failing test', 'refactor the runner', '修复所有问题']) {
+      expect(resolveActiveToolNames({ toolNames, prompt })).toContain('ApplyPatch');
+    }
+    expect(resolveActiveToolNames({ toolNames, prompt: 'explain the architecture' })).not.toContain('ApplyPatch');
+  });
+
+  it('diagnoses repeated explicit validation failures once, not runtime failures', async () => {
+    const bad = { operation: 'status', revision: 'HEAD' };
+    const fixture = nativeFixture([
+      [toolItem('bad1', 'GitRead', bad)], [toolItem('bad2', 'GitRead', bad)],
+      [toolItem('bad3', 'GitRead', bad)], [textItem('Use a corrected call next time.')],
+    ], { tools: [gitRead] });
+    const events = await collect(fixture.makeEngine().query({ prompt: 'Inspect GitRead.', workDir: root }));
+    assertSuccessfulTurn(events);
+    expect(events.filter(event => event.type === 'tool_end').every(event => event.isError)).toBe(true);
+    const lastInput = JSON.stringify(fixture.requests.at(-1).input);
+    expect(lastInput.match(/rejected the same arguments twice/g)).toHaveLength(1);
+    expect(toolValidationError('{"error":"network timeout"}')).toBeNull();
+    expect(toolValidationError('{"error":"test failed","code":"invalid_arguments"}')).toBeNull();
   });
 });
