@@ -13,7 +13,7 @@ import { runProcess } from '../../../agent/yeaft/tools/process-runner.js';
 import webFetch from '../../../agent/yeaft/tools/web-fetch.js';
 import { resolveActiveToolNames } from '../../../agent/yeaft/tools/activation.js';
 import exitWorktree from '../../../agent/yeaft/tools/exit-worktree.js';
-import gitRead from '../../../agent/yeaft/tools/git-read.js';
+import gitRead, { createGitReadTool, MAX_RESULT_BYTES } from '../../../agent/yeaft/tools/git-read.js';
 import { ToolRegistry, truncateToolResultIfNeeded, toolValidationError } from '../../../agent/yeaft/tools/registry.js';
 import { estimateContentTokens, estimateMessageTokens, estimateMessagesTokens, trimSnapshotForBudget } from '../../../agent/yeaft/history-window.js';
 import { createProviderContext, createProviderState, MAX_PROVIDER_STATE_BYTES, replayProviderState } from '../../../agent/yeaft/llm/provider-state.js';
@@ -456,6 +456,35 @@ describe('tool efficiency contracts', () => {
       expect(resolveActiveToolNames({ toolNames, prompt })).toContain('ApplyPatch');
     }
     expect(resolveActiveToolNames({ toolNames, prompt: 'explain the architecture' })).not.toContain('ApplyPatch');
+  });
+
+  it('reports Git runtime failures as tool errors while keeping display-only truncation successful', async () => {
+    const runProcessImpl = vi.fn()
+      .mockResolvedValueOnce({ code: 128, stdout: '', stderr: 'fatal: unknown revision' })
+      .mockResolvedValueOnce({ code: 124, timedOut: true, stdout: '' })
+      .mockResolvedValueOnce({ code: 1, truncated: true, stdout: 'partial' })
+      .mockResolvedValueOnce({ code: 0, stdout: 'x'.repeat(MAX_RESULT_BYTES * 2) });
+    const input = { operation: 'log', revision: 'missing-ref' };
+    const fixture = nativeFixture([
+      [toolItem('git1', 'GitRead', input)], [toolItem('git2', 'GitRead', input)],
+      [toolItem('git3', 'GitRead', input)], [toolItem('git4', 'GitRead', input)], [textItem('Evidence inspected.')],
+    ], { tools: [createGitReadTool({ runProcessImpl })] });
+    const events = await collect(fixture.makeEngine().query({ prompt: 'Inspect Git history.', workDir: root }));
+    assertSuccessfulTurn(events);
+    expect(events.filter(event => event.type === 'tool_end').map(event => event.isError)).toEqual([true, true, true, false]);
+    expect(runProcessImpl).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(fixture.requests.at(-1).input)).not.toContain('rejected the same arguments twice');
+  });
+
+  it('keeps reviewer GitRead visible without intent but hides it from unrelated normal requests', async () => {
+    for (const pinned of [false, true]) {
+      const fixture = nativeFixture([[textItem('Ready.')]], { tools: [gitRead] });
+      const engine = fixture.makeEngine({ config: {
+        model: MODEL, maxOutputTokens: 1024, projectDocMaxBytes: 0, _gitReadAlwaysVisible: pinned,
+      } });
+      assertSuccessfulTurn(await collect(engine.query({ prompt: 'Continue.', workDir: root })));
+      expect(fixture.requests[0].tools?.some(tool => tool.name === 'GitRead') || false).toBe(pinned);
+    }
   });
 
   it('diagnoses repeated explicit validation failures once, not runtime failures', async () => {

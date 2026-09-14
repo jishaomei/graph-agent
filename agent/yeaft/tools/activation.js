@@ -38,6 +38,7 @@ export const SUB_AGENT_MANAGEMENT_TOOL_NAMES = Object.freeze([
 ]);
 
 export const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
+  'GitRead',
   'HistorySearch',
   'DiskUsage',
   'ApplyPatch',
@@ -57,6 +58,7 @@ export const CONDITIONAL_BUILTIN_TOOL_NAMES = new Set([
   'ImageGeneration',
 ]);
 
+const GIT_INTENT_RE = /(?:\bgit(?:read)?\b|\bdiff\b|\breview\b|\bcommit(?:s)?\b|\bbranch(?:es)?\b|\bworktree\b|\bpull request\b|\bPR\b|代码审查|审查|评审|提交|分支|工作树|工作区(?:状态|改动)|合并|变更差异)/iu;
 const HISTORY_INTENT_RE = /(?:\bhistory\b|\b(?:prior|previous) (?:chat|conversation|discussion)\b|\bprevious(?:ly)? discussed\b|\bwhat did we (?:decide|discuss|say|agree)\b|\b(?:our|the) (?:earlier|last) decision\b|历史|之前(?:的)?(?:对话|讨论|会话|决定)|过去(?:的)?会话|我们(?:之前|上次)(?:决定|讨论|说)了什么)/iu;
 const DISK_INTENT_RE = /(?:\bdisk (?:usage|space|full)\b|\bstorage (?:usage|space|full)\b|\blargest director|\benospc\b|\bno space left on device\b|磁盘(?:占用|空间|已满)|存储空间|目录占用|空间不足)/iu;
 const PATCH_INTENT_RE = /(?:\b(?:implement|refactor|fix|edit)\b|修复|重构|修改|实现|\bapply (?:a )?patch\b|\bunified diff\b|\bpatch file\b|应用补丁|统一 diff|补丁文件)/iu;
@@ -120,6 +122,7 @@ function matchedMcpTools(intentText, toolNames) {
  *   activeTasks?: object[],
  *   subAgentToolsActivated?: boolean,
  *   imageGenerationConfigured?: boolean,
+ *   gitReadAlwaysVisible?: boolean,
  * }} opts
  * @returns {Set<string>}
  */
@@ -131,6 +134,7 @@ export function resolveActiveToolNames({
   activeTasks = [],
   subAgentToolsActivated = false,
   imageGenerationConfigured = false,
+  gitReadAlwaysVisible = false,
 } = {}) {
   const registered = new Set(Array.isArray(toolNames) ? toolNames : []);
   const active = new Set(ALWAYS_VISIBLE_TOOL_NAMES.filter(name => registered.has(name)));
@@ -139,6 +143,7 @@ export function resolveActiveToolNames({
   const hasActiveTasks = tasks.length > 0;
   const hasSubAgentTask = tasks.some(task => task?.kind === 'sub_agent');
 
+  if (gitReadAlwaysVisible || GIT_INTENT_RE.test(intentText)) active.add('GitRead');
   if (HISTORY_INTENT_RE.test(intentText)) active.add('HistorySearch');
   if (DISK_INTENT_RE.test(intentText)) active.add('DiskUsage');
   if (PATCH_INTENT_RE.test(intentText)) active.add('ApplyPatch');

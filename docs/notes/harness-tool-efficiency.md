@@ -5,6 +5,9 @@
 ## 工具契约
 
 - `GitRead` 将严格 schema 常见的空占位参数视为省略；仍拒绝未知字段、非默认的跨 operation 参数及危险 revision/path。校验错误明确标注尚未执行，并给出最小调用示例。同一 query 中同参数的确定性校验错误重复两次后，Engine 提醒改正参数；网络、测试、运行时失败不被误判成参数错误。
+- `GitRead` 的 Git 非零退出、超时、捕获阶段截断及退出未确认使用有界 JSON error envelope；Engine 据此标记 `tool_end.isError`，不再把文本中的失败退出码算成功。诊断包含 operation、失败阶段、实际 cwd 与 stderr；显示层裁剪已成功完成的输出仍是成功，不能与因捕获上限终止混淆。
+- `GitRead show` 先通过固定 `rev-parse --verify --end-of-options <revision>^{commit}` 解析唯一 commit，再按 SHA 读取；支持 tag，拒绝范围、tree、blob 等对象。`log` 保留有界范围读取。只有 status 和默认工作区 diff 检查并覆盖内容 filter，log/show/显式 base...head diff 只读对象，不做无意义的 filter 查询。
+- 主 Agent 的 `GitRead` schema 随 Git、diff、review、提交、分支等近期意图激活；未匹配时仍可通过 `DiscoverTools` 获取。reviewer 子 Agent 始终可见已授权的 GitRead，不要求 Bash，也不因使命正文缺少关键词而隐藏；激活不突破 registry/allowlist。
 - `Bash` 与 `ExitWorktree` 的相对工作路径以执行上下文的 `cwd` 为基准，而不是服务进程目录。Bash 失败结果包含解析后的目录；权限、目录隔离和终止确认不因此放宽。
 - `FileRead` 返回内容 hash 及当前 query 已读取的重叠范围提示。关闭跨 loop 文件内容缓存，始终读取当前内容，不抑制显式复核；提示不是缓存命中承诺，文件修改后旧版本的范围记录失效。
 

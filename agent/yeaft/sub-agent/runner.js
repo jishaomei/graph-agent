@@ -143,7 +143,10 @@ export function startSubAgent(agent, deps = {}) {
     subEngine = new Engine({
       adapter: deps.adapter,
       trace: deps.trace,
-      config: { ...deps.config, _readOnly: true },
+      config: {
+        ...deps.config, _readOnly: true,
+        _gitReadAlwaysVisible: (agent.personaData || getPersona(agent.persona))?.id === 'reviewer',
+      },
       conversationStore: null,
       memoryIndex: deps.memoryIndex || null,
       memoryStore: deps.memoryStore || null,

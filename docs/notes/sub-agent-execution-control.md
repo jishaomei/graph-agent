@@ -33,11 +33,11 @@
 
 ## Persona 与交付契约
 
-`explorer`、`reviewer`、`researcher` 默认按 persona 模板工具表构建 allowlist。`Read` 兼容别名解析为 `FileRead`；`reviewer` 默认包含受限 `GitRead`。`SpawnAgent.allow_tools` 可显式增加必要的父级已注册工具，如 `Bash`、`FileEdit`、`FileWrite`；`UpdateAgent.allow_tools` 替换额外授权（`[]` 撤销额外授权，省略则保持）。授权可在下一轮发现工具，撤销阻止后续 dispatch，不能撤回已经执行的外部副作用。
+`explorer`、`reviewer`、`researcher` 默认按 persona 模板工具表构建 allowlist。`Read` 兼容别名解析为 `FileRead`；`reviewer` 默认包含受限 `GitRead`，且首个及后续 provider 请求始终可见（即使命令正文无 Git 关键词）；这只是已授权工具的暴露策略，不额外授予 Bash。`SpawnAgent.allow_tools` 可显式增加必要的父级已注册工具，如 `Bash`、`FileEdit`、`FileWrite`；`UpdateAgent.allow_tools` 替换额外授权（`[]` 撤销额外授权，省略则保持）。授权可在下一轮发现工具，撤销阻止后续 dispatch，不能撤回已经执行的外部副作用。
 
 Bash 是任意 Shell/写入能力，不是只读 sandbox，也不受 cwd 的安全沙箱限制。父级必须确认任务授权和 workspace 隔离，避免并行写冲突；默认 persona 不是用户权限边界。授权不能超过父级实际 registry，也不能通过别名、DiscoverTools 或 MCP 热注册突破子级 allowlist。`implementer` 和未指定 persona 保留原有工作工具；所有子任务仍禁止递归 Spawn / UpdateAgent / AskUser / handoff。
 
-`GitRead` 仅支持本地 status/diff/show/log，固定 argv 且输出有界。禁用 external diff、textconv、clean/process 等内容 filter 和子模块遍历；不写 Git 配置，不触发网络读取。代价是 LFS 等 filter 文件展示原始工作区字节，子模块内容需另行检查；配置过滤器无法完整检查时拒绝执行，不降级为不受限 Git。
+`GitRead` 仅支持本地 status/diff/show/log，固定 argv 且输出有界。禁用 external diff、textconv、clean/process 等内容 filter 和子模块遍历；不写 Git 配置，不触发网络读取。代价是 LFS 等 filter 文件展示原始工作区字节，子模块内容需另行检查；status/工作区 diff 的配置过滤器无法完整检查时拒绝执行，不降级为不受限 Git。log/show/显式范围 diff 不读取工作区内容，不运行 filter discovery。show 只接受可解析到唯一 commit 的 revision；Git 失败、超时及捕获阶段截断会标为工具错误，并保留有界诊断。
 
 模板角色文本在嵌入父 VP soul 前选择语言，避免内部 language marker 截断父 soul 或任务契约。`expected_output` 注入提示，但不提供 JSON Schema 强制验证；不能把它等同于已通过结构验收。
 
