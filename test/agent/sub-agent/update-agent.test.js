@@ -38,6 +38,43 @@ describe('parent-owned live child controls', () => {
     }
   });
 
+  it('pins GitRead only for reviewer requests, without adding Bash or bypassing child authorization', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-reviewer-git-'));
+    const registry = new ToolRegistry().register(tool('GitRead')).register(tool('Bash'));
+    try {
+      for (const persona of ['reviewer', 'implementer', 'explorer']) {
+        const agent = record();
+        agent.persona = persona;
+        agent.mission = 'Continue.';
+        agent.taskId = 'task';
+        const requests = [];
+        const adapter = {
+          async *stream(params) {
+            requests.push(params);
+            yield { type: 'text_delta', text: 'Done.' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        };
+        startSubAgent(agent, { adapter, parentToolRegistry: registry,
+          parentSessionId: 's', parentVpId: 'vp', parentThreadId: 'main',
+          config: { model: 'test', projectDocMaxBytes: 0 }, trace: new NullTrace(),
+          yeaftDir: dir, subAgentLogDir: dir,
+          taskManager: { completeTask() {}, refreshTaskLog() {}, renderActiveTasksForPrompt() { return ''; } } });
+        try {
+          await vi.waitFor(() => expect(agent.__driverStarted).toBe(false));
+          expect(requests).toHaveLength(1);
+          const names = (requests[0].tools || []).map(tool => tool.name);
+          expect(names.includes('GitRead')).toBe(persona === 'reviewer');
+          expect(names.includes('Bash')).toBe(persona === 'implementer');
+        } finally {
+          agent.abortController.abort('cleanup');
+        }
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('updates absolute limits without clearing usage, and validates atomically', async () => {
     const agent = record();
     agent.rearmWallTimeWatchdog = vi.fn();

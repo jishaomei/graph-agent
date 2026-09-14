@@ -2356,6 +2356,7 @@ export class Engine {
     const resolveCurrentActiveToolNames = () => this.#toolRegistry
       ? resolveActiveToolNames({
           toolNames: registeredToolNames,
+          gitReadAlwaysVisible: this.#config?._gitReadAlwaysVisible === true,
           prompt,
           messages,
           collabToolPolicy: effectiveCollabToolPolicy,

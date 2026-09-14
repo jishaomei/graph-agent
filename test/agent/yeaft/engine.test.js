@@ -147,6 +147,8 @@ describe('active tool exposure and scoped prompts', () => {
     const toolNames = registry.getToolNames();
     const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
     expect(toolNames).not.toContain('RepoWorkflow');
+    expect(baseline.has('GitRead')).toBe(false);
+    expect(CONDITIONAL_BUILTIN_TOOL_NAMES.has('GitRead')).toBe(true);
 
     for (const name of ['StartPlan', 'TodoWrite']) {
       expect(toolNames).not.toContain(name);
@@ -199,7 +201,17 @@ describe('active tool exposure and scoped prompts', () => {
       prompt: 'Run the task.',
     }).has('SpawnAgent')).toBe(true);
 
+    expect(resolveActiveToolNames({ toolNames, prompt: '继续', messages: [
+      { role: 'assistant', content: '下一步审查 diff。' },
+    ] }).has('GitRead')).toBe(true);
+    expect(resolveActiveToolNames({ toolNames: ['FileRead'], gitReadAlwaysVisible: true }).has('GitRead')).toBe(false);
     const ordinaryLanguageCases = [
+      ['Inspect GitRead failures', 'GitRead', {}],
+      ['Show the branch diff', 'GitRead', {}],
+      ['Review this pull request', 'GitRead', {}],
+      ['检查工作区状态', 'GitRead', {}],
+      ['查看提交历史', 'GitRead', {}],
+      ['Continue.', 'GitRead', { gitReadAlwaysVisible: true }],
       ['What did we decide about authentication?', 'HistorySearch', {}],
       ['Please have another worker inspect this independently.', 'SpawnAgent', {}],
       ['Make me a logo for this project.', 'ImageGeneration', { imageGenerationConfigured: true }],
@@ -283,6 +295,7 @@ describe('active tool exposure and scoped prompts', () => {
         parameters: tool.parameters,
       }));
     const paraphrases = [
+      ['Inspect local repository evidence', 'GitRead'],
       ['Bring back the approach we used for login.', 'HistorySearch'],
       ['Ask a separate specialist to examine this.', 'SpawnAgent'],
       ['I need artwork for the launch header.', 'ImageGeneration'],

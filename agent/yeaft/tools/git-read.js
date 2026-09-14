@@ -27,13 +27,13 @@ const COMMON_ARGS = Object.freeze([
 // Worktree status/diff may invoke clean/process filters even with textconv and
 // external diff disabled. Discover their keys, never values, and override them
 // for this process only. Incomplete discovery fails closed.
-async function filterOverrides(run, options) {
+async function filterOverrides(run) {
   const result = await run('git', [
     ...COMMON_ARGS, 'config', '--null', '--name-only', '--get-regexp',
     '^filter\\..*\\.(clean|smudge|process|required)$',
-  ], options);
-  if (result.truncated || result.timedOut || (result.code !== 0 && result.code !== 1)) {
-    throw new Error('Cannot safely inspect Git content filters');
+  ]);
+  if (result.truncated || result.timedOut || result.terminationError || (result.code !== 0 && result.code !== 1)) {
+    throw Object.assign(new Error('Cannot safely inspect Git content filters'), { result });
   }
   if (result.code === 1) return [];
   const keys = [...new Set(result.stdout.split('\0').filter(Boolean))];
@@ -47,8 +47,8 @@ async function filterOverrides(run, options) {
 }
 
 function errorOutput(message, operation) {
-  return JSON.stringify({
-    error: message, errorEffect: 'none', code: 'invalid_arguments',
+  return boundedFailure({
+    error: takeUtf8(message, 1024), errorEffect: 'none', code: 'invalid_arguments',
     hint: `Use only fields for the chosen operation. Minimal example: ${JSON.stringify({ operation: ['status', 'diff', 'show', 'log'].includes(operation) ? operation : 'status' })}`,
   });
 }
@@ -170,21 +170,19 @@ function takeUtf8(text, maxBytes) {
   return buffer.subarray(0, end).toString('utf8');
 }
 
-export function formatGitReadResult(operation, result) {
-  const timedOut = Boolean(result.timedOut);
-  const runnerTruncated = Boolean(result.truncated);
+function formatSuccess(operation, result) {
   const sections = [];
   if (result.stdout) sections.push(`STDOUT:\n${result.stdout}`);
   if (result.stderr) sections.push(`STDERR:\n${result.stderr}`);
   const body = sections.join('\n');
   const baseHeader = truncated => [
     `operation: ${operation}`,
-    `exitCode: ${runnerTruncated ? 'not observed (output limit reached)' : result.code}`,
-    `timedOut: ${timedOut}`,
+    `exitCode: ${result.code}`,
+    'timedOut: false',
     `truncated: ${truncated}`,
   ].join('\n');
-  const initial = `${baseHeader(runnerTruncated)}\n\n${body || '(no output)'}`;
-  if (!runnerTruncated && Buffer.byteLength(initial, 'utf8') <= MAX_RESULT_BYTES) return initial;
+  const initial = `${baseHeader(false)}\n\n${body || '(no output)'}`;
+  if (Buffer.byteLength(initial, 'utf8') <= MAX_RESULT_BYTES) return initial;
 
   const marker = '\n\n[Output truncated by GitRead; narrow the revision or paths.]';
   const header = `${baseHeader(true)}\n\n`;
@@ -195,6 +193,62 @@ export function formatGitReadResult(operation, result) {
   return header + takeUtf8(body || '(no output)', bodyBudget) + marker;
 }
 
+// Keep returned errors parseable even when JSON escaping expands raw output.
+// Engine uses this envelope (not text exit codes) for tool_end.isError.
+function boundedFailure(fields, output = '') {
+  const envelope = { ...fields, ...(output ? { output: String(output) } : {}) };
+  // Metadata is not necessarily small: even an invalid cwd reaches spawn.
+  // Bound each string after allowing for JSON's worst-case 6x escaping;
+  // the fixed envelope fields then leave ample room for diagnostics.
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === 'string' && Buffer.byteLength(value, 'utf8') > 512) {
+      envelope[key] = takeUtf8(value, 512) + '[truncated]';
+      envelope.truncated = true;
+    }
+  }
+  let serialized = JSON.stringify(envelope);
+  const marker = '\n[GitRead diagnostic truncated; narrow the revision or paths.]';
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_RESULT_BYTES) {
+    envelope.truncated = true;
+    let low = 0;
+    let high = Math.min(Buffer.byteLength(output, 'utf8'), MAX_RESULT_BYTES);
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      envelope.output = takeUtf8(output, mid) + marker;
+      if (Buffer.byteLength(JSON.stringify(envelope), 'utf8') <= MAX_RESULT_BYTES) low = mid;
+      else high = mid - 1;
+    }
+    envelope.output = takeUtf8(output, low) + marker;
+    serialized = JSON.stringify(envelope);
+  }
+  return serialized;
+}
+
+export function formatGitReadResult(operation, result, { resolvedCwd, stage = operation } = {}) {
+  if (result.code === 0 && !result.timedOut && !result.truncated && !result.terminationError) {
+    return formatSuccess(operation, result);
+  }
+  const code = result.terminationError ? 'git_exit_unconfirmed'
+    : result.timedOut ? 'git_timeout'
+      : result.truncated ? 'git_output_limit'
+        : !Number.isInteger(result.code) ? 'git_exit_unconfirmed' : 'git_failed';
+  const error = {
+    git_exit_unconfirmed: 'Git process exit was not confirmed',
+    git_timeout: 'Git read timed out',
+    git_output_limit: 'Git read stopped at the capture limit; output is incomplete',
+    git_failed: `Git exited with code ${result.code}`,
+  }[code];
+  // Put stderr first so a long partial diff cannot hide Git's explanation.
+  const output = [result.terminationError, result.stderr && `STDERR:\n${result.stderr}`,
+    result.stdout && `STDOUT:\n${result.stdout}`].filter(Boolean).join('\n');
+  return boundedFailure({
+    error, errorEffect: 'none', code, operation, stage, resolvedCwd,
+    exitCode: result.truncated || result.terminationError ? null : (result.code ?? null),
+    timedOut: Boolean(result.timedOut), truncated: Boolean(result.truncated),
+    ...(result.terminationError || code === 'git_exit_unconfirmed' ? { terminationConfirmed: false } : {}),
+  }, output);
+}
+
 const gitReadTool = defineTool({
   name: 'GitRead',
   description: {
@@ -203,19 +257,19 @@ const gitReadTool = defineTool({
 Supported operations are intentionally limited:
 - status: compact branch and working-tree status.
 - diff: tracked changes against HEAD by default, or an explicit base...head range; optional paths narrow the result.
-- show: one commit (HEAD by default), optionally narrowed by paths.
+- show: exactly one commit (HEAD by default; tags are peeled to commits), optionally narrowed by paths. Ranges and non-commit objects are rejected.
 - log: a compact bounded commit list (20 entries by default, maximum 50).
 
-GitRead never fetches, writes Git state, or creates worktrees. It disables pagers, external diff, textconv, content filters, optional locks, fsmonitor, and submodule traversal. Filter-normalized files (such as LFS) show raw worktree bytes; submodule status needs separate inspection. Revisions and paths beginning with "-" are rejected. Output reports whether it was truncated.`,
+GitRead never fetches, writes Git state, or creates worktrees. It disables pagers, external diff, textconv, content filters, optional locks, fsmonitor, and submodule traversal. Filter-normalized files (such as LFS) show raw worktree bytes; submodule status needs separate inspection. Revisions and paths beginning with "-" are rejected. Output reports truncation. Git failures, timeouts and capture-limit stops return an error with bounded diagnostics.`,
     zh: `有界读取本地 Git 证据，不使用 shell，也不访问网络。
 
 操作范围刻意限制为：
 - status：紧凑显示分支和工作区状态。
 - diff：默认显示相对 HEAD 的已跟踪改动，也可指定 base...head；可用 paths 缩小范围。
-- show：显示一个提交（默认 HEAD），可用 paths 缩小范围。
+- show：显示唯一提交（默认 HEAD；tag 解析到 commit），可用 paths 缩小范围。拒绝范围及非 commit 对象。
 - log：紧凑且有界的提交列表（默认 20 条，最多 50 条）。
 
-GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、external diff、textconv、内容 filter、optional locks、fsmonitor 和子模块遍历。LFS 等 filter 文件显示原始工作区字节，子模块状态需单独检查。拒绝以 "-" 开头的 revision 与路径；结果明确标识是否截断。`,
+GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、external diff、textconv、内容 filter、optional locks、fsmonitor 和子模块遍历。LFS 等 filter 文件显示原始工作区字节，子模块状态需单独检查。拒绝以 "-" 开头的 revision 与路径；结果明确标识是否截断；Git 失败、超时及捕获上限终止返回含有界诊断的错误。`,
   },
   parameters: {
     type: 'object',
@@ -224,7 +278,7 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
       operation: { type: 'string', enum: ['status', 'diff', 'show', 'log'] },
       base: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'diff only; empty/omitted means working-tree changes against HEAD' },
       head: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'diff only; requires base, empty/omitted defaults to HEAD' },
-      revision: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'show/log only; empty/omitted defaults to HEAD' },
+      revision: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'show/log only; empty/omitted defaults to HEAD. show requires a single commit, not a range/tree/blob' },
       paths: {
         type: 'array',
         maxItems: MAX_PATHS,
@@ -241,7 +295,9 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
   async execute(input, ctx) {
     const built = buildGitReadArgs(input);
     if (built.error) return errorOutput(built.error, input?.operation);
+    input = normalizeInput(input);
     const cwd = resolve(ctx?.cwd || process.cwd());
+    let stage = input.operation;
     try {
       const run = ctx?.[RUN_PROCESS_OVERRIDE] || runProcess;
       const startedAt = Date.now();
@@ -250,6 +306,7 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
         signal: ctx?.signal,
         timeoutMs: TIMEOUT_MS,
         maxBytes: MAX_CAPTURE_BYTES,
+        requireExitConfirmation: true,
         env: {
           ...process.env,
           GIT_PAGER: 'cat',
@@ -261,14 +318,54 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
           NO_COLOR: '1',
         },
       };
-      const overrides = await filterOverrides(run, options);
-      const result = await run('git', [...overrides, ...built.args], {
-        ...options, timeoutMs: Math.max(1, TIMEOUT_MS - (Date.now() - startedAt)),
-      });
-      return formatGitReadResult(input.operation, result);
+      const read = (command, args) => {
+        const remaining = TIMEOUT_MS - (Date.now() - startedAt);
+        if (remaining <= 0) {
+          throw Object.assign(new Error('Git read timed out'), { code: 'git_timeout', timedOut: true });
+        }
+        return run(command, args, { ...options, timeoutMs: remaining });
+      };
+      // Only these operations inspect worktree bytes. Object-only reads must
+      // not pay for filter discovery or fail on an unusable worktree filter.
+      const readsWorktree = input.operation === 'status'
+        || (input.operation === 'diff' && input.base === undefined);
+      let overrides = [];
+      if (readsWorktree) {
+        stage = 'filter_inspection';
+        overrides = await filterOverrides(read);
+      }
+      let args = built.args;
+      if (input.operation === 'show') {
+        stage = 'resolve_commit';
+        const resolved = await read('git', [
+          ...COMMON_ARGS, 'rev-parse', '--verify', '--end-of-options', `${input.revision || 'HEAD'}^{commit}`,
+        ]);
+        if (resolved.code !== 0 || resolved.truncated || resolved.timedOut || resolved.terminationError) {
+          return formatGitReadResult(input.operation, resolved, { resolvedCwd: cwd, stage });
+        }
+        const commit = resolved.stdout.trim();
+        if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)) {
+          throw new Error('Expected exactly one resolved commit object ID');
+        }
+        args = buildGitReadArgs({ ...input, revision: commit }).args;
+      }
+      stage = input.operation;
+      const result = await read('git', [...overrides, ...args]);
+      return formatGitReadResult(input.operation, result, { resolvedCwd: cwd, stage });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
-      return JSON.stringify({ error: `GitRead failed: ${error?.message || String(error)}`, resolvedCwd: cwd });
+      if (error?.result) {
+        return formatGitReadResult(input.operation, error.result, { resolvedCwd: cwd, stage });
+      }
+      return boundedFailure({
+        error: 'GitRead failed', errorEffect: 'none',
+        code: error?.name === 'ProcessTerminationError' ? 'git_exit_unconfirmed'
+          : error?.code === 'git_timeout' ? 'git_timeout'
+            : stage === 'filter_inspection' ? 'git_filter_inspection_failed' : 'git_execution_error',
+        operation: input.operation, stage, resolvedCwd: cwd,
+        ...(error?.timedOut ? { timedOut: true } : {}),
+        ...(error?.name === 'ProcessTerminationError' ? { terminationConfirmed: false } : {}),
+      }, error?.message || String(error));
     }
   },
 });
