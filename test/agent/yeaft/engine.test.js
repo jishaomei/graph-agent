@@ -146,6 +146,7 @@ describe('active tool exposure and scoped prompts', () => {
     const registry = createFullRegistry();
     const toolNames = registry.getToolNames();
     const baseline = resolveActiveToolNames({ toolNames, prompt: 'Explain this code.' });
+    expect(toolNames).not.toContain('RepoWorkflow');
 
     for (const name of ['StartPlan', 'TodoWrite']) {
       expect(toolNames).not.toContain(name);
