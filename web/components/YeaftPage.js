@@ -1,4 +1,5 @@
 import ChatInput from './ChatInput.js';
+import AgentInstaller from './AgentInstaller.js';
 import MessageList from './MessageList.js';
 import SettingsPanel from './SettingsPanel.js';
 import AgentSettingsPanel from './AgentSettingsPanel.js';
@@ -98,7 +99,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, AgentSettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline },
+  components: { ChatInput, AgentInstaller, MessageList, SettingsPanel, AgentSettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, PluginCenterPage, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -234,43 +235,21 @@ export default {
                     <p>{{ $t('yeaft.onboarding.installDesc') }}</p>
                   </div>
                 </div>
-                <div class="yeaft-onboarding-command">
-                  <code>{{ installAgentCommand }}</code>
-                  <button type="button" class="yeaft-onboarding-copy" @click="copyOnboardingCommand('install', installAgentCommand)">
-                    {{ copiedOnboardingCommand === 'install' ? $t('common.copied') : $t('common.copy') }}
-                  </button>
-                </div>
+                <AgentInstaller
+                  :agent-secret="agentSecret"
+                  :loading="agentSecretLoading"
+                  :error="agentSecretError"
+                  @open-settings="openSettings({ initialTab: 'security' })"
+                />
               </article>
 
               <article class="yeaft-onboarding-step" role="listitem">
                 <div class="yeaft-onboarding-step-head">
                   <span class="yeaft-onboarding-step-index">2</span>
                   <div>
-                    <h2>{{ $t('yeaft.onboarding.connectTitle') }}</h2>
-                    <p>{{ $t('yeaft.onboarding.connectDesc') }}</p>
-                  </div>
-                </div>
-                <div class="yeaft-onboarding-command">
-                  <code>{{ connectAgentCommand }}</code>
-                  <button type="button" class="yeaft-onboarding-copy" :disabled="!agentSecret" @click="copyOnboardingCommand('connect', connectAgentCommand)">
-                    {{ copiedOnboardingCommand === 'connect' ? $t('common.copied') : $t('common.copy') }}
-                  </button>
-                </div>
-              </article>
-
-              <article class="yeaft-onboarding-step" role="listitem">
-                <div class="yeaft-onboarding-step-head">
-                  <span class="yeaft-onboarding-step-index">3</span>
-                  <div>
                     <h2>{{ $t('yeaft.onboarding.llmTitle') }}</h2>
                     <p>{{ $t('yeaft.onboarding.llmDesc') }}</p>
                   </div>
-                </div>
-                <div class="yeaft-onboarding-command">
-                  <code>{{ copilotCommand }}</code>
-                  <button type="button" class="yeaft-onboarding-copy" @click="copyOnboardingCommand('copilot', copilotCommand)">
-                    {{ copiedOnboardingCommand === 'copilot' ? $t('common.copied') : $t('common.copy') }}
-                  </button>
                 </div>
               </article>
             </div>
@@ -525,11 +504,9 @@ export default {
     const agentSettingsAgentId = Vue.ref(null);
     const agentSettingsInitialCategory = Vue.ref('operations');
     const sessionCreateOpen = Vue.ref(false);
-    const copiedOnboardingCommand = Vue.ref('');
     const agentSecret = Vue.ref('');
     const agentSecretLoading = Vue.ref(false);
     const agentSecretError = Vue.ref('');
-    let copiedOnboardingTimer = null;
     const settingsInitialTab = Vue.ref('vp');
     const settingsInitialEditVpId = Vue.ref(null);
     // feat-vp-list-ui-polish: template ref to the embedded ChatInput so we
@@ -1228,7 +1205,7 @@ export default {
     // task-343: VP library lives inside Settings as a tab. Helper to open
     // Settings at a specific tab (used by SessionInviteModal CTA).
     const openSettings = ({ initialTab = 'vp', editVpId = null } = {}) => {
-      settingsInitialTab.value = ['vp', 'search', 'mcp'].includes(initialTab) ? initialTab : 'vp';
+      settingsInitialTab.value = ['vp', 'search', 'mcp', 'security'].includes(initialTab) ? initialTab : 'vp';
       settingsInitialEditVpId.value = settingsInitialTab.value === 'vp' ? (editVpId || null) : null;
       showSettings.value = true;
     };
@@ -1271,24 +1248,6 @@ export default {
 
     const onSessionCreated = (_session) => {
       sessionCreateOpen.value = false;
-    };
-
-    const copyOnboardingCommand = async (key, command) => {
-      if (!command) return;
-      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
-      try {
-        const text = typeof command === 'string' ? command : (command?.value || '');
-        if (!text) return;
-        await navigator.clipboard.writeText(text);
-        copiedOnboardingCommand.value = key || '';
-        if (copiedOnboardingTimer) clearTimeout(copiedOnboardingTimer);
-        copiedOnboardingTimer = setTimeout(() => {
-          copiedOnboardingCommand.value = '';
-          copiedOnboardingTimer = null;
-        }, 1800);
-      } catch (_) {
-        // Clipboard is best-effort; the command remains visible for manual copy.
-      }
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever
@@ -1354,14 +1313,6 @@ export default {
     Vue.watch(showOnboardingGuide, (visible) => {
       if (visible) loadAgentSecret();
     }, { immediate: true });
-    const installAgentCommand = 'npm install -g @yeaft/webchat-agent';
-    const connectAgentCommand = Vue.computed(() => {
-      const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : 'http://localhost:3456';
-      const serverUrl = origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
-      const secret = agentSecret.value || $t('yeaft.onboarding.secretPending');
-      return `yeaft-agent install --server ${serverUrl} --name yeaft-agent --secret ${secret}`;
-    });
-    const copilotCommand = 'gh auth login && yeaft-agent llm use github-copilot --model gpt-5.5';
     const onInviteOpenLibrary = () => {
       const g = activeGroupForInvite.value;
       if (g) inviteDismissedFor.add(g.id);
@@ -1445,13 +1396,6 @@ export default {
         }
       },
     );
-
-    if (typeof Vue.onBeforeUnmount === 'function') {
-      Vue.onBeforeUnmount(() => {
-        if (copiedOnboardingTimer) clearTimeout(copiedOnboardingTimer);
-        copiedOnboardingTimer = null;
-      });
-    }
 
     const onSettingsSaved = () => {
       showSettings.value = false;
@@ -1651,8 +1595,6 @@ export default {
       clearOverlayPointerGesture,
       openSessionCreate,
       onSessionCreated,
-      copyOnboardingCommand,
-      copiedOnboardingCommand,
       formatTokens,
       formatModelCtx,
       toggleSettings,
@@ -1671,9 +1613,6 @@ export default {
       isActiveGroupEmpty,
       conversationInventoryReady,
       showOnboardingGuide,
-      installAgentCommand,
-      connectAgentCommand,
-      copilotCommand,
       agentSecret,
       agentSecretLoading,
       agentSecretError,

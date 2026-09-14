@@ -119,6 +119,10 @@ Claude Code 和 Copilot CLI conversation 仍需要分别安装并登录对应 CL
 
 ### 连接已有 Server
 
+推荐：打开 **设置 → 安全**，选择 **Linux / macOS** 或 **Windows PowerShell**，复制一键安装命令。脚本会检查 Node.js/npm、在独立用户目录安装 Agent，并使用当前服务器地址和 Secret 启动 `<机器名>-<四位随机数>` 新实例，不替换已有 Node 或正在运行的 Agent。平台要求、安全注意事项和管理方式见 [Agent 安装](docs/zh-CN/guide/deploy-agent.md)。
+
+手动安装方式：
+
 ```bash
 npm install -g @yeaft/webchat-agent
 yeaft-agent --server wss://your-server.example --name my-worker --secret your-agent-secret

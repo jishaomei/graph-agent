@@ -213,6 +213,14 @@ if (existsSync(assetsSrc)) {
   console.log(`   Copied web/assets/ → dist/assets/ (${assetCount} entries)`);
 }
 
+// Public bootstrap scripts must remain available in production/local-runtime.
+// Fail the build if either installer is missing rather than shipping a dead setup command.
+const installersDist = join(distDir, 'installers');
+mkdirSync(installersDist, { recursive: true });
+for (const file of ['install.sh', 'install.ps1']) {
+  copyFileSync(join(__dirname, 'installers', file), join(installersDist, file));
+}
+
 // Calculate sizes
 const vendorSize = statSync(join(distDir, 'vendor.bundle.js')).size;
 const vendorGzSize = statSync(join(distDir, 'vendor.bundle.js.gz')).size;
