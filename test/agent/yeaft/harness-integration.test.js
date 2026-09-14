@@ -180,7 +180,7 @@ describe('native history window replay', () => {
 });
 
 describe('Engine native harness integration', () => {
-  it('persists private native state, replays it in-loop and after Engine/store restart, without UI leakage', async () => {
+  it('persists private native state, replays it only in-loop, and omits it from later turns and UI', async () => {
     const storeDir = join(root, 'sessions', SESSION);
     const store = new ConversationStore(storeDir);
     const reasoning = { type: 'reasoning', id: 'reasoning_original',
@@ -206,7 +206,7 @@ describe('Engine native harness integration', () => {
     const restarted = fixture.makeEngine({ conversationStore: new ConversationStore(storeDir) });
     const restored = await collect(restarted.query({ prompt: 'Continue after restart.' }));
     for (const index of [2, 3]) {
-      expect(fixture.requests[index].input.filter(item => original.some(row => row.id === item.id))).toEqual(original);
+      expect(fixture.requests[index].input.filter(item => original.some(row => row.id === item.id))).toEqual([]);
     }
     for (const events of [first, second, restored]) {
       assertSuccessfulTurn(events);

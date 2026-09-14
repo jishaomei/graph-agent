@@ -84,7 +84,7 @@ describe('Engine canonical message recall integration', () => {
     expect(store.loadAllBySession(sessionId).filter(m => m.role === 'user' && m.content === current.content)).toHaveLength(2);
   });
 
-  it('recovers 10 chronological turns behind a tool-heavy tail, replaying only the newest 3 tool turns', async () => {
+  it('recovers 10 chronological text turns without replaying completed tool history', async () => {
     for (let turn = 0; turn < 24; turn++) {
       append('user', `Recent question ${turn}`, { clientMessageId: `q${turn}` });
       for (let call = 0; call < 5; call++) {
@@ -103,10 +103,11 @@ describe('Engine canonical message recall integration', () => {
     expect(call.messages.filter(m => m.role === 'user').map(m => m.content)).toEqual([
       ...Array.from({ length: 10 }, (_, i) => `Recent question ${i + 14}`), 'current',
     ]);
-    expect(call.messages.filter(m => m.role === 'tool').map(m => m.toolCallId)).toEqual(
-      [21, 22, 23].flatMap(turn => Array.from({ length: 5 }, (_, i) => `c${turn}-${i}`)),
-    );
-    expect(trace.log.mock.calls.find(([name]) => name === 'history_buckets')[1].recent.turnCount).toBe(10);
+    expect(call.messages.filter(m => m.role === 'tool')).toEqual([]);
+    expect(call.messages.flatMap(m => m.toolCalls || [])).toEqual([]);
+    const meta = trace.log.mock.calls.find(([name]) => name === 'history_buckets')[1];
+    expect(meta.recent.turnCount).toBe(10);
+    expect(meta.budget.effectiveKeepToolTurns).toBe(0);
   });
 
   it('calls the provider with compressed history when three recent turns cannot fit completely', async () => {
