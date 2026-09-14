@@ -22,7 +22,6 @@ import { ToolRegistry } from './registry.js';
 import skillTool from './skill.js';
 import enterWorktree from './enter-worktree.js';
 import exitWorktree from './exit-worktree.js';
-import repoWorkflow from './repo-workflow.js';
 
 // --- P0 Core tools ---
 import askUser from './ask-user.js';
@@ -89,7 +88,6 @@ export const allTools = [
   skillTool,
   enterWorktree,
   exitWorktree,
-  repoWorkflow,
 
   // P0 Core
   askUser,
