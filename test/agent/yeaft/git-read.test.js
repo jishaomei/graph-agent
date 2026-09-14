@@ -62,6 +62,23 @@ describe('GitRead argument construction', () => {
     ]));
   });
 
+  it('normalizes required-schema empty placeholders without ignoring meaningful mistakes', async () => {
+    const placeholders = { base: '', head: '', revision: '', paths: [], limit: 20 };
+    for (const operation of ['status', 'diff', 'show', 'log']) {
+      expect(buildGitReadArgs({ operation, ...placeholders })).toEqual(buildGitReadArgs({ operation }));
+      expect(buildGitReadArgs({ operation, base: null, head: null, revision: null, paths: null, limit: null }))
+        .toEqual(buildGitReadArgs({ operation }));
+    }
+    expect(buildGitReadArgs({ operation: 'status', limit: 5 }).error).toContain('Unexpected');
+    expect(buildGitReadArgs({ operation: 'status', mystery: '' }).error).toContain('Unexpected');
+    expect(buildGitReadArgs({ operation: 'diff', base: '', head: 'branch' }).error).toBe('head requires base');
+    const runProcessImpl = vi.fn();
+    const failure = JSON.parse(await createGitReadTool({ runProcessImpl }).execute({ operation: 'status', revision: 'HEAD' }, {}));
+    expect(failure).toMatchObject({ code: 'invalid_arguments', errorEffect: 'none' });
+    expect(failure.hint).toContain('{"operation":"status"}');
+    expect(runProcessImpl).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ operation: 'diff', base: '--output=/tmp/pwned' }, 'base must not start with'],
     [{ operation: 'diff', paths: ['--ext-diff'] }, 'paths[0] must not start with'],

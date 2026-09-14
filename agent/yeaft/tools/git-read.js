@@ -46,8 +46,27 @@ async function filterOverrides(run, options) {
   });
 }
 
-function errorOutput(message) {
-  return JSON.stringify({ error: message });
+function errorOutput(message, operation) {
+  return JSON.stringify({
+    error: message, errorEffect: 'none', code: 'invalid_arguments',
+    hint: `Use only fields for the chosen operation. Minimal example: ${JSON.stringify({ operation: ['status', 'diff', 'show', 'log'].includes(operation) ? operation : 'status' })}`,
+  });
+}
+
+// Some strict-schema providers require every property. Treat their empty
+// placeholders as omitted, without accepting unknown keys or non-default
+// arguments belonging to another operation.
+function normalizeInput(input) {
+  const result = { ...input };
+  for (const key of ['base', 'head', 'revision', 'paths', 'limit']) {
+    if (result[key] === null || result[key] === undefined
+        || (['base', 'head', 'revision'].includes(key) && result[key] === '')
+        || (key === 'paths' && Array.isArray(result[key]) && result[key].length === 0)
+        || (key === 'limit' && result.operation !== 'log' && result[key] === DEFAULT_LOG_LIMIT)) {
+      delete result[key];
+    }
+  }
+  return result;
 }
 
 function validateValue(value, name) {
@@ -80,6 +99,7 @@ export function buildGitReadArgs(input) {
     return { error: 'input must be an object' };
   }
 
+  input = normalizeInput(input);
   const { operation } = input;
   if (!['status', 'diff', 'show', 'log'].includes(operation)) {
     return { error: 'operation must be one of: status, diff, show, log' };
@@ -202,16 +222,16 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
     additionalProperties: false,
     properties: {
       operation: { type: 'string', enum: ['status', 'diff', 'show', 'log'] },
-      base: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'Diff base revision; omitted for working-tree changes against HEAD' },
-      head: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'Diff head revision; requires base and defaults to HEAD' },
-      revision: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'Revision for show or log (default: HEAD)' },
+      base: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'diff only; empty/omitted means working-tree changes against HEAD' },
+      head: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'diff only; requires base, empty/omitted defaults to HEAD' },
+      revision: { type: 'string', maxLength: MAX_VALUE_LENGTH, description: 'show/log only; empty/omitted defaults to HEAD' },
       paths: {
         type: 'array',
         maxItems: MAX_PATHS,
         items: { type: 'string', minLength: 1, maxLength: MAX_VALUE_LENGTH },
-        description: 'Optional repository-relative paths for diff or show',
+        description: 'diff/show only; empty/omitted means all paths',
       },
-      limit: { type: 'integer', minimum: 1, maximum: MAX_LOG_LIMIT, description: 'Maximum log entries' },
+      limit: { type: 'integer', minimum: 1, maximum: MAX_LOG_LIMIT, description: 'log only; default 20. Empty optional fields are ignored; omit fields for other operations.' },
     },
     required: ['operation'],
   },
@@ -220,7 +240,7 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
   isReadOnly: () => true,
   async execute(input, ctx) {
     const built = buildGitReadArgs(input);
-    if (built.error) return errorOutput(built.error);
+    if (built.error) return errorOutput(built.error, input?.operation);
     const cwd = resolve(ctx?.cwd || process.cwd());
     try {
       const run = ctx?.[RUN_PROCESS_OVERRIDE] || runProcess;
@@ -248,7 +268,7 @@ GitRead 不 fetch、不写 Git 状态、不创建 worktree。它禁用 pager、e
       return formatGitReadResult(input.operation, result);
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
-      return errorOutput(`GitRead failed: ${error?.message || String(error)}`);
+      return JSON.stringify({ error: `GitRead failed: ${error?.message || String(error)}`, resolvedCwd: cwd });
     }
   },
 });
