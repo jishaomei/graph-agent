@@ -62,6 +62,7 @@ describe.skipIf(!powerShellAvailable)('Windows bootstrap installer', () => {
     const result = JSON.parse(output.trim().split(/\r?\n/).at(-1));
     expect(result).toMatchObject({
       aclCalled: true,
+      downloaded: false,
       complete: true,
       manager: true,
       secretMatched: true,
@@ -109,6 +110,11 @@ ${command}
     expect(failed.stderr).toContain('checksum verification failed');
     expect(readdirSync(join(root, 'home/.yeaft/installations'))).toEqual([]);
     expect(failed.stderr).not.toContain('fake-key');
+  });
+
+  it('ignores a foreign npm shim and downloads a paired runtime when the selected Node has no npm CLI', () => {
+    const output = runPowerShell(['-File', fixture, '-Installer', installer, '-Sandbox', sandbox(), '-Server', 'wss://test.example', '-Secret', 'fake-key', '-NodePath', process.execPath, '-Mode', 'mismatched-npm']);
+    expect(JSON.parse(output.trim().split(/\r?\n/).at(-1))).toMatchObject({ complete: true, downloaded: true, secretMatched: true, pathRestored: true });
   });
 
   it('uses the published package root and does not pass credentials on the CLI', () => {

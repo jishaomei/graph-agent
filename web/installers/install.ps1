@@ -65,16 +65,15 @@ try {
   $DownloadedRuntime = $false
   $NodeCommand = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
   if (-not $NodeCommand) { $NodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue }
-  $NpmCommand = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-  if (-not $NpmCommand) { $NpmCommand = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue }
-  if ($NodeCommand -and $NpmCommand -and (Test-Node $NodeCommand.Source)) {
-    & $NpmCommand.Source --version *> $null
-    if ($LASTEXITCODE -eq 0) {
-      $Node = $NodeCommand.Source
-      $Npm = $NpmCommand.Source
-      if ([IO.Path]::IsPathRooted($Npm)) {
-        $NpmCandidate = Join-Path (Split-Path -Parent $Npm) 'node_modules\npm\bin\npm-cli.js'
-        if (Test-Path -LiteralPath $NpmCandidate) { $NpmCli = $NpmCandidate }
+  if ($NodeCommand -and (Test-Node $NodeCommand.Source)) {
+    # A PATH npm.cmd may use a different adjacent node.exe (nvm/Volta/shims).
+    # Resolve Node's actual executable and require its own npm JS entry point.
+    $CandidateNode = (& $NodeCommand.Source --no-warnings -p 'process.execPath' 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and [IO.Path]::IsPathRooted($CandidateNode)) {
+      $NpmCandidate = Join-Path (Split-Path -Parent $CandidateNode) 'node_modules\npm\bin\npm-cli.js'
+      if ((Test-Path -LiteralPath $NpmCandidate) -and (Test-Node $CandidateNode)) {
+        & $CandidateNode $NpmCandidate --version *> $null
+        if ($LASTEXITCODE -eq 0) { $Node = $CandidateNode; $NpmCli = $NpmCandidate }
       }
     }
   }
@@ -165,8 +164,9 @@ try {
   $NodeDir = Split-Path -Parent $Node
   $LocalBin = Join-Path $Prefix 'node_modules\.bin'
   $env:PATH = "$NodeDir;$Prefix;$LocalBin;$OriginalPath"
-  if ($NpmCli) { & $Node $NpmCli --prefix $Prefix --global=false install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
-  else { & $Npm --prefix $Prefix --global=false install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
+  & $Node $NpmCli --version *> $null
+  if ($LASTEXITCODE -ne 0) { Stop-Install 'the selected Node.js does not provide a working npm' }
+  & $Node $NpmCli --prefix $Prefix --global=false install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error
   if ($LASTEXITCODE -ne 0) { Stop-Install 'npm could not install the Yeaft Agent' }
 
   $Cli = Join-Path $Prefix 'node_modules\@yeaft\webchat-agent\cli.js'
@@ -247,7 +247,8 @@ exit `$code
     'could not restrict installation directory permissions',
     'no supported Node.js archive was listed by nodejs.org','Node.js checksum verification failed',
     'could not unpack Node.js','downloaded Node.js does not meet the minimum version',
-    'npm could not install the Yeaft Agent','the installed package did not provide the required CLI and PM2 runtime',
+    'npm could not install the Yeaft Agent','the selected Node.js does not provide a working npm',
+    'the installed package did not provide the required CLI and PM2 runtime',
     'the Agent service could not be installed','the Agent startup file was not created'
   )
   $Message = if ($SafeMessages -contains $_.Exception.Message) { $_.Exception.Message } else { 'an unexpected operation failed; no existing Agent was changed' }
