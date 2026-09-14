@@ -45,6 +45,52 @@ describe('Session message quote UI wiring', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps the response-owned back-to-question action available while streaming', async () => {
+    globalThis.Vue = Vue;
+    globalThis.Pinia = {
+      defineStore: () => () => ({}),
+      useChatStore: () => ({ answerUserQuestion: vi.fn(), cancelVpTurn: vi.fn() }),
+    };
+    globalThis.marked = { setOptions: vi.fn(), parse: vi.fn(text => `<p>${text}</p>`) };
+    globalThis.hljs = undefined;
+    const { default: AssistantTurn } = await import('../../web/components/AssistantTurn.js');
+    const streamingTurn = {
+      id: 'turn-live', turnId: 'turn-live', textContent: 'Working',
+      textSegments: [{ key: 'segment-live', content: 'Working', kind: 'progress', isStreaming: true }],
+      toolMsgs: [], imageMsgs: [], todoMsg: null, askMsg: null,
+      isStreaming: true, messages: [],
+    };
+    const wrapper = mount(AssistantTurn, {
+      props: { turn: streamingTurn, originMessageId: 'question-1', sessionActions: true },
+      global: {
+        mocks: { $t: key => key },
+        provide: { t: key => key },
+        stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+
+    const originButton = wrapper.get('.response-origin-btn');
+    expect(originButton.text()).toBe('message.backToQuestion');
+    expect(wrapper.get('.response-origin-nav').exists()).toBe(true);
+    expect(wrapper.find('.turn-footer').exists()).toBe(false);
+    expect(wrapper.find('.copy-full-btn').exists()).toBe(false);
+    await originButton.trigger('click');
+    expect(wrapper.emitted('jump-to-origin')).toEqual([['question-1']]);
+
+    const withoutOrigin = mount(AssistantTurn, {
+      props: { turn: streamingTurn },
+      global: {
+        mocks: { $t: key => key },
+        provide: { t: key => key },
+        stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
+      },
+    });
+    expect(withoutOrigin.find('.response-origin-nav').exists()).toBe(false);
+    expect(withoutOrigin.find('.turn-footer').exists()).toBe(false);
+    withoutOrigin.unmount();
+    wrapper.unmount();
+  });
+
   it('keeps user attachments inside the bubble and separates turn progress from the final Markdown result', async () => {
     const user = readFileSync(resolve(process.cwd(), 'web/components/MessageItem.js'), 'utf8');
     const bubbleStart = user.indexOf('class="message-user-block"');

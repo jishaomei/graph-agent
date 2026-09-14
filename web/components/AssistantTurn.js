@@ -62,12 +62,13 @@ export default {
     },
     sessionActions: { type: Boolean, default: false },
     quoteAuthor: { type: String, default: '' },
+    originMessageId: { type: String, default: '' },
     // VpTurnBlock opts into the turn-scoped debug action. Keeping this
     // opt-in preserves the legacy Chat footer unchanged.
     showDebugAction: { type: Boolean, default: false },
     debugActionTitle: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug', 'jump-to-origin'],
   template: `
     <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId, 'has-turn-debug-action': showDebugAction }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
@@ -83,6 +84,19 @@ export default {
         :show-stop="turn.isStreaming && !!turn.turnId"
         @stop-turn="onStopTurn"
       />
+
+      <div v-if="originMessageId" class="response-origin-nav">
+        <button
+          type="button"
+          class="response-origin-btn"
+          @click="$emit('jump-to-origin', originMessageId)"
+          :title="$t('message.backToQuestion')"
+          :aria-label="$t('message.backToQuestion')"
+        >
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M12 5l-7 7 1.41 1.41L11 8.83V19h2V8.83l4.59 4.58L19 12l-7-7z"/></svg>
+          <span>{{ $t('message.backToQuestion') }}</span>
+        </button>
+      </div>
 
       <div class="turn-message-block" :data-turn-id="turn.turnId || ''">
         <!-- 1. Text content -->
@@ -201,7 +215,10 @@ export default {
       </div>
 
       <!-- 6. Response footer actions (visible on hover) -->
-      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length))) && !turn.isStreaming">
+      <div
+        class="turn-footer"
+        v-if="(turn.textContent || responseCollapsible || showDebugAction || (sessionActions && (turn.todoMsg || turn.toolMsgs?.length))) && !turn.isStreaming"
+      >
         <div
           v-if="(turnTime && !turn.speakerVpId) || responseModelMeta || turn.llmCallCount > 0 || responseTokenMeta"
           class="turn-response-meta"
