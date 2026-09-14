@@ -663,10 +663,10 @@ export default {
           type="button"
           class="transcript-navigation-btn response-origin-btn"
           @click="jumpToOrigin(activeLongResponseOriginId)"
-          :title="$t('message.backToQuestion')"
-          :aria-label="$t('message.backToQuestion')"
+          :title="$t('message.backToCurrentTurn')"
+          :aria-label="$t('message.backToCurrentTurn')"
         >
-          {{ $t('message.question') }}
+          {{ $t('message.currentTurn') }}
         </button>
         <button type="button" class="transcript-navigation-btn scroll-to-latest" :class="{ 'is-hidden': isAtBottom }" @click="scrollToLatest">
           {{ $t('message.scrollToLatest') }}

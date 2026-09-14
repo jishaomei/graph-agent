@@ -479,8 +479,8 @@ describe('Yeaft history result rendered reveal', () => {
     await Vue.nextTick();
 
     const originButton = messageList.get('.response-origin-btn');
-    expect(originButton.text()).toBe('message.question');
-    expect(originButton.attributes('aria-label')).toBe('message.backToQuestion');
+    expect(originButton.text()).toBe('message.currentTurn');
+    expect(originButton.attributes('aria-label')).toBe('message.backToCurrentTurn');
     expect(messageList.findAll('.response-origin-btn')).toHaveLength(1);
 
     const virtualTranscript = wrapper.getComponent({ name: 'VirtualTranscript' });

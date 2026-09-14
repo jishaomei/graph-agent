@@ -158,14 +158,14 @@ function originNavigationHarnessHtml() {
           </div>
           <nav class="transcript-navigation" aria-label="Conversation navigation">
             <button v-if="activeOriginId" type="button" class="transcript-navigation-btn response-origin-btn"
-              aria-label="Back to question" title="Back to question" @click="jumpToQuestion">Question</button>
+              aria-label="Back to this turn’s question" title="Back to this turn’s question" @click="jumpToQuestion">↑ Turn</button>
             <button type="button" class="transcript-navigation-btn scroll-to-latest">↓ Latest</button>
           </nav>
         </main>
         <output data-jump-count>{{ jumpCount }}</output>
       </div>` + "`" + `,
     });
-    const translate = key => ({ 'message.backToQuestion': 'Back to question' })[key] || key;
+    const translate = key => ({ 'message.backToCurrentTurn': 'Back to this turn’s question' })[key] || key;
     app.config.globalProperties.$t = translate;
     app.provide('t', translate);
     app.mount('#app');
@@ -453,14 +453,14 @@ test('debug panel keeps one latest request and full loop tools across themes and
   await expect(result).toContainText('RESULT_TAIL');
 });
 
-test('shows one question action above latest only while reading a two-viewport response', async ({ page }) => {
+test('shows one turn action above latest only while reading a two-viewport response', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto(`${baseUrl}/__origin-navigation`);
   await page.waitForFunction(() => window.__ready === true);
 
   const scroller = page.locator('.chat-container');
-  const button = page.getByRole('button', { name: 'Back to question' });
+  const button = page.getByRole('button', { name: 'Back to this turn’s question' });
   const latest = page.getByRole('button', { name: '↓ Latest' });
   const question = page.locator('.origin-question');
   await expect(button).toHaveCount(0);
@@ -474,7 +474,7 @@ test('shows one question action above latest only while reading a two-viewport r
     await page.setViewportSize({ width, height });
     await scroller.evaluate(element => { element.scrollTop = 1000; });
     await expect(button).toBeVisible();
-    await expect(button).toHaveText('Question');
+    await expect(button).toHaveText('↑ Turn');
     await expect(page.locator('.response-origin-btn')).toHaveCount(1);
     const layout = await page.evaluate(() => {
       const navRect = document.querySelector('.transcript-navigation').getBoundingClientRect();
