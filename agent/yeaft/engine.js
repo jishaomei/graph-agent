@@ -2924,6 +2924,10 @@ export class Engine {
           recentTurnCap: Math.max(10, requestConfig.yeaft?.recentTurnsLimit ?? 10),
           relatedTurnCap: Math.min(5, requestConfig.yeaft?.relatedTurnsLimit ?? 5),
           messageTokenBudget: historyBudget,
+          // Completed turns contribute only visible user/assistant text. The
+          // active turn starts at turnStartIdx and keeps its complete tool
+          // protocol for every in-loop provider request.
+          keepToolTurns: 0,
           currentTurnStartIndex: turnStartIdx,
           language: requestConfig.language,
         }) : null;
@@ -2931,6 +2935,7 @@ export class Engine {
         const requestHistory = buckets?.messages || (() => {
           const historical = trimSnapshotForBudget(conversationMessages.slice(0, turnStartIdx), {
             messageTokenBudget: historyBudget,
+            keepToolTurns: 0,
             language: requestConfig.language,
           });
           historyMessageCount = historical.length;
