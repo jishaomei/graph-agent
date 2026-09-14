@@ -45,7 +45,7 @@ describe('Session message quote UI wiring', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps the response-owned back-to-question action available while streaming', async () => {
+  it('marks a streaming response origin without rendering a per-response navigation button', async () => {
     globalThis.Vue = Vue;
     globalThis.Pinia = {
       defineStore: () => () => ({}),
@@ -69,13 +69,10 @@ describe('Session message quote UI wiring', () => {
       },
     });
 
-    const originButton = wrapper.get('.response-origin-btn');
-    expect(originButton.text()).toBe('message.backToQuestion');
-    expect(wrapper.get('.response-origin-nav').exists()).toBe(true);
+    expect(wrapper.get('.assistant-turn').attributes('data-response-origin-id')).toBe('question-1');
+    expect(wrapper.find('.response-origin-btn').exists()).toBe(false);
     expect(wrapper.find('.turn-footer').exists()).toBe(false);
     expect(wrapper.find('.copy-full-btn').exists()).toBe(false);
-    await originButton.trigger('click');
-    expect(wrapper.emitted('jump-to-origin')).toEqual([['question-1']]);
 
     const withoutOrigin = mount(AssistantTurn, {
       props: { turn: streamingTurn },
@@ -85,7 +82,8 @@ describe('Session message quote UI wiring', () => {
         stubs: { ToolLine: true, AskCard: true, VpSpeakerHeader: true },
       },
     });
-    expect(withoutOrigin.find('.response-origin-nav').exists()).toBe(false);
+    expect(withoutOrigin.get('.assistant-turn').attributes('data-response-origin-id')).toBeUndefined();
+    expect(withoutOrigin.find('.response-origin-btn').exists()).toBe(false);
     expect(withoutOrigin.find('.turn-footer').exists()).toBe(false);
     withoutOrigin.unmount();
     wrapper.unmount();

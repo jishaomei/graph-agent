@@ -47,7 +47,7 @@ export default {
     interactiveSpeaker: { type: Boolean, default: true },
     originMessageId: { type: String, default: '' },
   },
-  emits: ['toggle-response-collapse', 'quote', 'open-debug', 'jump-to-origin'],
+  emits: ['toggle-response-collapse', 'quote', 'open-debug'],
   template: `
     <div class="vp-turn-block"
          :class="{ 'vp-turn-block-streaming': turn.isStreaming }"
@@ -120,7 +120,6 @@ export default {
           :show-debug-action="hasDebugEntry"
           :debug-action-title="debugActionTitle"
           @quote="$emit('quote', $event)"
-          @jump-to-origin="$emit('jump-to-origin', $event)"
           @open-debug="$emit('open-debug')"
           @toggle-response-collapse="$emit('toggle-response-collapse')"
         />

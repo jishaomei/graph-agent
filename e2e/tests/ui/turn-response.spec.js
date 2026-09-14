@@ -82,7 +82,8 @@ function originNavigationHarnessHtml() {
     body { background: var(--bg-main); color: var(--text-primary); }
     .origin-harness { height: 100%; display: flex; flex-direction: column; }
     .origin-harness .chat-container { flex: 1; padding: 0; }
-    .origin-question, .origin-next { padding: 20px 0; }
+    .origin-question, .origin-short-question, .origin-next { padding: 20px 0; }
+    .origin-long-response .assistant-turn { min-height: 1500px; }
     .origin-next { min-height: 900px; }
   </style>
 </head>
@@ -100,33 +101,66 @@ function originNavigationHarnessHtml() {
     };
     window.hljs = undefined;
     const { default: VpTurnBlock } = await import('/web/components/VpTurnBlock.js');
+    const { resolveLongResponseOrigin } = await import('/web/utils/response-origin-navigation.js');
+    const shortText = 'A concise response should not receive its own navigation action.';
     const responseText = Array.from({ length: 90 }, (_, index) => 'Response section ' + (index + 1) + ' explains the implementation and verification details.').join(' ');
-    const turn = Vue.reactive({
-      id: 'turn-origin', turnId: 'turn-origin', textContent: responseText,
-      textSegments: [{ key: 'result', content: responseText, kind: 'result', explicitKind: true, isStreaming: false }],
+    const makeTurn = (id, text) => Vue.reactive({
+      id, turnId: id, textContent: text,
+      textSegments: [{ key: 'result', content: text, kind: 'result', explicitKind: true, isStreaming: false }],
       toolMsgs: [], imageMsgs: [], todoMsg: null, askMsg: null, messages: [],
       isStreaming: false, isActive: false, speakerVpId: 'vp-origin', speakerTimestamp: Date.now(),
     });
+    const shortTurn = makeTurn('turn-short', shortText);
+    const turn = makeTurn('turn-origin', responseText);
     const scroller = Vue.ref(null);
+    const activeOriginId = Vue.ref('');
     const jumpCount = Vue.ref(0);
+    let updateRaf = null;
+    const updateNavigation = () => {
+      updateRaf = null;
+      const viewport = scroller.value.getBoundingClientRect();
+      activeOriginId.value = resolveLongResponseOrigin({
+        viewportTop: viewport.top,
+        viewportHeight: scroller.value.clientHeight,
+        responses: Array.from(scroller.value.querySelectorAll('[data-response-origin-id]')).map(element => {
+          const rect = element.getBoundingClientRect();
+          return { originMessageId: element.dataset.responseOriginId, top: rect.top, bottom: rect.bottom, height: rect.height };
+        }),
+      });
+    };
+    const scheduleNavigation = () => {
+      if (updateRaf != null) return;
+      updateRaf = requestAnimationFrame(updateNavigation);
+    };
     const jumpToQuestion = () => {
       jumpCount.value += 1;
+      activeOriginId.value = '';
       scroller.value.scrollTo({ top: 0, behavior: 'instant' });
       document.querySelector('.origin-question')?.classList.add('msg-flash');
     };
     const app = Vue.createApp({
       components: { VpTurnBlock },
-      setup() { return { turn, scroller, jumpCount, jumpToQuestion }; },
+      setup() {
+        Vue.onMounted(() => { scroller.value.addEventListener('scroll', scheduleNavigation, { passive: true }); scheduleNavigation(); });
+        Vue.onUnmounted(() => scroller.value?.removeEventListener('scroll', scheduleNavigation));
+        return { shortTurn, turn, scroller, activeOriginId, jumpCount, jumpToQuestion };
+      },
       template: ` + "`" + `<div class="yeaft-page origin-harness">
         <main ref="scroller" class="chat-container">
           <div class="messages">
+            <section class="origin-short-question msg-row">Short question</section>
+            <VpTurnBlock :turn="shortTurn" display-name-override="Yeaft" :interactive-speaker="false" origin-message-id="question-short" />
             <section class="origin-question msg-row" data-msg-id="question-origin">How should this feature work?</section>
-            <div class="virtual-transcript-item" data-response-boundary>
-              <VpTurnBlock :turn="turn" display-name-override="Yeaft" :interactive-speaker="false"
-                origin-message-id="question-origin" @jump-to-origin="jumpToQuestion" />
+            <div class="virtual-transcript-item origin-long-response" data-response-boundary>
+              <VpTurnBlock :turn="turn" display-name-override="Yeaft" :interactive-speaker="false" origin-message-id="question-origin" />
             </div>
             <section class="origin-next">Following conversation</section>
           </div>
+          <nav class="transcript-navigation" aria-label="Conversation navigation">
+            <button v-if="activeOriginId" type="button" class="transcript-navigation-btn response-origin-btn"
+              aria-label="Back to question" title="Back to question" @click="jumpToQuestion">Question</button>
+            <button type="button" class="transcript-navigation-btn scroll-to-latest">↓ Latest</button>
+          </nav>
         </main>
         <output data-jump-count>{{ jumpCount }}</output>
       </div>` + "`" + `,
@@ -419,23 +453,18 @@ test('debug panel keeps one latest request and full loop tools across themes and
   await expect(result).toContainText('RESULT_TAIL');
 });
 
-test('keeps the response-owned back-to-question action reachable through a long response', async ({ page }) => {
+test('shows one question action above latest only while reading a two-viewport response', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto(`${baseUrl}/__origin-navigation`);
   await page.waitForFunction(() => window.__ready === true);
 
   const scroller = page.locator('.chat-container');
-  const responseBoundary = page.locator('[data-response-boundary]');
   const button = page.getByRole('button', { name: 'Back to question' });
+  const latest = page.getByRole('button', { name: '↓ Latest' });
   const question = page.locator('.origin-question');
-  await expect(button).toBeVisible();
-  const initial = await page.evaluate(() => {
-    const nav = document.querySelector('.response-origin-nav').getBoundingClientRect();
-    const body = document.querySelector('.turn-message-block').getBoundingClientRect();
-    return { navBottom: nav.bottom, bodyTop: body.top };
-  });
-  expect(initial.bodyTop).toBeGreaterThanOrEqual(initial.navBottom);
+  await expect(button).toHaveCount(0);
+  await expect(page.locator('.assistant-turn[data-response-origin-id="question-short"]')).toHaveCount(1);
 
   for (const { width, height, theme } of [
     { width: 1280, height: 640, theme: 'light' },
@@ -443,39 +472,38 @@ test('keeps the response-owned back-to-question action reachable through a long 
   ]) {
     await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
     await page.setViewportSize({ width, height });
-    await scroller.evaluate(element => { element.scrollTop = 900; });
+    await scroller.evaluate(element => { element.scrollTop = 1000; });
     await expect(button).toBeVisible();
-    const sticky = await page.evaluate(() => {
-      const scrollerRect = document.querySelector('.chat-container').getBoundingClientRect();
+    await expect(button).toHaveText('Question');
+    await expect(page.locator('.response-origin-btn')).toHaveCount(1);
+    const layout = await page.evaluate(() => {
+      const navRect = document.querySelector('.transcript-navigation').getBoundingClientRect();
       const buttonRect = document.querySelector('.response-origin-btn').getBoundingClientRect();
-      const boundaryRect = document.querySelector('[data-response-boundary]').getBoundingClientRect();
+      const latestRect = document.querySelector('.scroll-to-latest').getBoundingClientRect();
+      const scrollerRect = document.querySelector('.chat-container').getBoundingClientRect();
       return {
-        buttonTop: buttonRect.top,
-        scrollerTop: scrollerRect.top,
         buttonBottom: buttonRect.bottom,
-        boundaryBottom: boundaryRect.bottom,
+        latestTop: latestRect.top,
+        navBottom: navRect.bottom,
+        scrollerBottom: scrollerRect.bottom,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
       };
     });
-    expect(sticky.buttonTop).toBeGreaterThanOrEqual(sticky.scrollerTop + 7);
-    expect(sticky.buttonTop).toBeLessThanOrEqual(sticky.scrollerTop + 10);
-    expect(sticky.buttonBottom).toBeLessThanOrEqual(sticky.boundaryBottom);
-    expect(sticky.documentWidth).toBeLessThanOrEqual(sticky.viewportWidth);
+    expect(layout.buttonBottom).toBeLessThan(layout.latestTop);
+    expect(layout.navBottom).toBeLessThanOrEqual(layout.scrollerBottom - 11);
+    expect(layout.navBottom).toBeGreaterThanOrEqual(layout.scrollerBottom - 14);
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
 
     await button.click();
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0);
     await expect(question).toHaveClass(/msg-flash/);
+    await expect(button).toHaveCount(0);
   }
 
   await scroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
-  const released = await page.evaluate(() => ({
-    boundaryBottom: document.querySelector('[data-response-boundary]').getBoundingClientRect().bottom,
-    buttonBottom: document.querySelector('.response-origin-btn').getBoundingClientRect().bottom,
-    scrollerTop: document.querySelector('.chat-container').getBoundingClientRect().top,
-  }));
-  expect(released.boundaryBottom).toBeLessThan(released.scrollerTop);
-  expect(released.buttonBottom).toBeLessThan(released.scrollerTop);
+  await expect(button).toHaveCount(0);
+  await expect(latest).toBeVisible();
   await expect(page.locator('[data-jump-count]')).toHaveText('2');
   expect(pageErrors).toEqual([]);
 });

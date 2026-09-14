@@ -68,9 +68,14 @@ export default {
     showDebugAction: { type: Boolean, default: false },
     debugActionTitle: { type: String, default: '' }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug', 'jump-to-origin'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse', 'quote', 'open-debug'],
   template: `
-    <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId, 'has-turn-debug-action': showDebugAction }">
+    <div
+      class="assistant-turn"
+      ref="turnRef"
+      :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId, 'has-turn-debug-action': showDebugAction }"
+      :data-response-origin-id="originMessageId || null"
+    >
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
            bound AND the upstream consecutive-collapse decided this turn
            should show the attribution. Legacy 1:1 chat turns leave
@@ -84,19 +89,6 @@ export default {
         :show-stop="turn.isStreaming && !!turn.turnId"
         @stop-turn="onStopTurn"
       />
-
-      <div v-if="originMessageId" class="response-origin-nav">
-        <button
-          type="button"
-          class="response-origin-btn"
-          @click="$emit('jump-to-origin', originMessageId)"
-          :title="$t('message.backToQuestion')"
-          :aria-label="$t('message.backToQuestion')"
-        >
-          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M12 5l-7 7 1.41 1.41L11 8.83V19h2V8.83l4.59 4.58L19 12l-7-7z"/></svg>
-          <span>{{ $t('message.backToQuestion') }}</span>
-        </button>
-      </div>
 
       <div class="turn-message-block" :data-turn-id="turn.turnId || ''">
         <!-- 1. Text content -->

@@ -30,6 +30,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/quick-send.test.js',
   'test/web/quick-send-composer.test.js',
   'test/web/quick-send-settings.test.js',
+  'test/web/response-origin-navigation.test.js',
   'test/web/user-shortcuts.test.js',
   'test/agent/yeaft/deepseek-effort.test.js',
   'test/agent/sub-agent/effort-inheritance.test.js',

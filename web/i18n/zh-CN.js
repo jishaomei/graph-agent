@@ -575,6 +575,8 @@ export default {
   'messages.loadMore': '↑ 点击或向上滚动加载更多',
   'message.loadingMore': '加载更多消息...',
   'message.loadMore': '↑ 点击或向上滚动加载更多',
+  'message.navigation': '对话导航',
+  'message.question': '问题',
   'message.scrollToLatest': '↓ 最新',
   'message.backToQuestion': '回到问题',
   'message.showResponses': '展开 {count} 条回复',

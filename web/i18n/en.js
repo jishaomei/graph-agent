@@ -611,6 +611,8 @@ export default {
   'messages.loadMore': '↑ Click or scroll up to load more',
   'message.loadingMore': 'Loading more messages...',
   'message.loadMore': '↑ Click or scroll up to load more',
+  'message.navigation': 'Conversation navigation',
+  'message.question': 'Question',
   'message.scrollToLatest': '↓ Latest',
   'message.backToQuestion': 'Back to question',
   'message.showResponses': 'Show {count} response(s)',
