@@ -76,6 +76,7 @@ describe.skipIf(!powerShellAvailable)('Windows bootstrap installer', () => {
       pm2Restored: true,
       startupPrivatePm2: true,
       managerPrivatePath: true,
+      upgradeResolvesPm2: true,
       workDirRestored: true,
       yeaftDirRestored: true,
       serverRestored: true,

@@ -164,9 +164,9 @@ try {
 
   $NodeDir = Split-Path -Parent $Node
   $LocalBin = Join-Path $Prefix 'node_modules\.bin'
-  $env:PATH = "$NodeDir;$LocalBin;$OriginalPath"
-  if ($NpmCli) { & $Node $NpmCli --prefix $Prefix install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
-  else { & $Npm --prefix $Prefix install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
+  $env:PATH = "$NodeDir;$Prefix;$LocalBin;$OriginalPath"
+  if ($NpmCli) { & $Node $NpmCli --prefix $Prefix --global=false install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
+  else { & $Npm --prefix $Prefix --global=false install $Package pm2 --registry=$Registry --no-audit --no-fund --loglevel=error }
   if ($LASTEXITCODE -ne 0) { Stop-Install 'npm could not install the Yeaft Agent' }
 
   $Cli = Join-Path $Prefix 'node_modules\@yeaft\webchat-agent\cli.js'
@@ -198,7 +198,7 @@ try {
   $TrayLines = @($StartupLines | Where-Object { $_ -match '^\s*start\s+.*agent-tray\.ps1' })
   $BatchNode = $Node.Replace('%', '%%')
   $BatchPm2 = $Pm2.Replace('%', '%%')
-  $BatchPath = "$NodeDir;$LocalBin".Replace('%', '%%')
+  $BatchPath = "$NodeDir;$Prefix;$LocalBin".Replace('%', '%%')
   $BatchHome = $Pm2Home.Replace('%', '%%')
   $StartupContent = @('@echo off', 'setlocal DisableDelayedExpansion', 'chcp 65001 >nul', "set `"PATH=$BatchPath;%PATH%`"", "set `"PM2_HOME=$BatchHome`"", "`"$BatchNode`" `"$BatchPm2`" resurrect") + $TrayLines
   [IO.File]::WriteAllText($StartupPath, ($StartupContent -join "`r`n") + "`r`n", (New-Object Text.UTF8Encoding($false)))
@@ -209,7 +209,7 @@ try {
   $NameLiteral = Quote-PowerShellLiteral $Name
   $YeaftLiteral = Quote-PowerShellLiteral $YeaftDir
   $WorkLiteral = Quote-PowerShellLiteral $WorkDir
-  $PathLiteral = Quote-PowerShellLiteral "$NodeDir;$LocalBin"
+  $PathLiteral = Quote-PowerShellLiteral "$NodeDir;$Prefix;$LocalBin"
   $Pm2HomeLiteral = Quote-PowerShellLiteral $Pm2Home
   Set-Content -LiteralPath $Manager -Encoding UTF8 -Value @"
 # Run this file in a child PowerShell, preserving the caller's environment.

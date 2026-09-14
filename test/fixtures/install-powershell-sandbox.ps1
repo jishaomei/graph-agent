@@ -65,6 +65,7 @@ fs.writeFileSync(path.join(process.env.APPDATA, 'cli-capture.json'), JSON.string
   server: process.env.SERVER_URL,
   workDir: process.env.WORK_DIR,
   yeaftDir: process.env.YEAFT_DIR,
+  runtimePath: process.env.PATH,
 }));
 '@
   $global:LASTEXITCODE = 0
@@ -114,6 +115,7 @@ $StartupText = Get-Content -LiteralPath $Startup.FullName -Raw
   pm2Restored = $env:PM2_HOME -ceq 'existing-pm2-home'
   startupPrivatePm2 = $StartupText -match 'PM2_HOME='
   managerPrivatePath = (Get-Content -LiteralPath (Join-Path $Installation.FullName 'yeaft-agent.ps1') -Raw) -match 'PM2_HOME'
+  upgradeResolvesPm2 = @($Capture.runtimePath -split ';') -contains $Installation.FullName
   startupAbsoluteNode = $StartupText -match [regex]::Escape($NodePath)
   startupAbsolutePm2 = $StartupText -match 'node_modules[\\/]pm2[\\/]bin[\\/]pm2'
   startupTrayPreserved = $StartupText -match 'agent-tray\.ps1'
