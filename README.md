@@ -119,6 +119,10 @@ Claude Code and Copilot CLI conversations require their corresponding CLI to be 
 
 ### Connect an Agent to an existing server
 
+Recommended: open **Settings → Security**, choose **Linux / macOS** or **Windows PowerShell**, and copy the one-line installer command. It checks Node.js/npm, installs the Agent in an isolated user directory, and starts a new instance named `<hostname>-<four random digits>` with your server address and Secret. Existing Node installations and running Agents are not replaced. See [Agent Setup](docs/guide/deploy-agent.md) for platform requirements, security notes and management commands.
+
+Manual alternative:
+
 ```bash
 npm install -g @yeaft/webchat-agent
 yeaft-agent --server wss://your-server.example --name my-worker --secret your-agent-secret

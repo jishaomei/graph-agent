@@ -1,10 +1,5 @@
 import { useAuthStore } from '../stores/auth.js';
-import {
-  getAgentInstallCommand,
-  getAgentLlmCommand,
-  getAgentServiceCommand,
-  getServerWsUrl,
-} from '../utils/agentSetup.js';
+import AgentInstaller from './AgentInstaller.js';
 import MessageItem from './MessageItem.js';
 import AssistantTurn from './AssistantTurn.js';
 import VpTurnBlock from './VpTurnBlock.js';
@@ -54,7 +49,7 @@ import { appendTurnResponseSegment, finalizeTurnResponseSegments } from '../util
 
 export default {
   name: 'MessageList',
-  components: { MessageItem, AssistantTurn, VpTurnBlock, VpSpeakerHeader, ReflectionCard, SubAgentCard, UserTurnBlock, VirtualTranscript },
+  components: { AgentInstaller, MessageItem, AssistantTurn, VpTurnBlock, VpSpeakerHeader, ReflectionCard, SubAgentCard, UserTurnBlock, VirtualTranscript },
   template: `
     <main class="chat-container" ref="containerRef">
       <!-- Session Loading Overlay - only covers message area -->
@@ -99,35 +94,19 @@ export default {
                   <span class="welcome-setup-step-number">1</span>
                   <div class="welcome-setup-step-body">
                     <div class="welcome-setup-step-title">{{ $t('welcome.setupInstallTitle') }}</div>
-                    <div class="welcome-command-row">
-                      <code>{{ welcomeInstallCommand }}</code>
-                      <button type="button" class="welcome-copy-btn" @click="copyWelcomeCommand(welcomeInstallCommand)">{{ $t('common.copy') }}</button>
-                    </div>
+                    <AgentInstaller
+                      :agent-secret="welcomeAgentSecret || ''"
+                      :loading="welcomeSetupLoading"
+                      :error="welcomeSetupError"
+                      @open-settings="$emit('open-settings')"
+                    />
                   </div>
                 </li>
                 <li class="welcome-setup-step">
                   <span class="welcome-setup-step-number">2</span>
                   <div class="welcome-setup-step-body">
-                    <div class="welcome-setup-step-title">{{ $t('welcome.setupRunTitle') }}</div>
-                    <p class="welcome-setup-step-desc" v-if="welcomeSetupLoading">{{ $t('welcome.setupSecretLoading') }}</p>
-                    <p class="welcome-setup-step-desc welcome-setup-error" v-else-if="welcomeSetupError">{{ $t('welcome.setupSecretError') }}</p>
-                    <div class="welcome-command-row" v-if="welcomeServiceCommand">
-                      <code>{{ welcomeServiceCommand }}</code>
-                      <button type="button" class="welcome-copy-btn" @click="copyWelcomeCommand(welcomeServiceCommand)">{{ $t('common.copy') }}</button>
-                    </div>
-                    <button v-else type="button" class="welcome-btn setup-agent-btn" @click="$emit('open-settings')">
-                      {{ $t('welcome.openSecuritySettings') }}
-                    </button>
-                  </div>
-                </li>
-                <li class="welcome-setup-step">
-                  <span class="welcome-setup-step-number">3</span>
-                  <div class="welcome-setup-step-body">
                     <div class="welcome-setup-step-title">{{ $t('welcome.setupCopilotTitle') }}</div>
-                    <div class="welcome-command-row">
-                      <code>{{ welcomeLlmCommand }}</code>
-                      <button type="button" class="welcome-copy-btn" @click="copyWelcomeCommand(welcomeLlmCommand)">{{ $t('common.copy') }}</button>
-                    </div>
+                    <p class="welcome-setup-step-desc">{{ $t('welcome.setupCopilotDesc') }}</p>
                   </div>
                 </li>
               </ol>
@@ -841,7 +820,6 @@ export default {
       return store.agents.filter(a => a.online);
     });
 
-    const welcomeProfile = Vue.ref(null);
     const welcomeAgentSecret = Vue.ref(null);
     const welcomeSetupLoading = Vue.ref(false);
     const welcomeSetupError = Vue.ref('');
@@ -850,20 +828,11 @@ export default {
     let lastWelcomeAuthToken = authStore.token || '';
 
     const resetWelcomeAgentSetup = () => {
-      welcomeProfile.value = null;
       welcomeAgentSecret.value = null;
       welcomeSetupError.value = '';
       welcomeSetupPromise = null;
       welcomeSetupRequestSeq += 1;
     };
-
-    const welcomeInstallCommand = getAgentInstallCommand();
-    const welcomeLlmCommand = getAgentLlmCommand();
-    const welcomeServiceCommand = Vue.computed(() => getAgentServiceCommand({
-      profile: welcomeProfile.value,
-      agentSecret: welcomeAgentSecret.value,
-      serverWsUrl: getServerWsUrl(location),
-    }));
 
     const welcomeHeaders = () => {
       const headers = { 'Content-Type': 'application/json' };
@@ -880,13 +849,8 @@ export default {
       welcomeSetupPromise = (async () => {
         const requestToken = authStore.token || '';
         const headers = welcomeHeaders();
-        const [profileRes, secretRes] = await Promise.all([
-          fetch('/api/user/profile', { headers }),
-          fetch('/api/user/agent-secret', { headers }),
-        ]);
-        const profileData = profileRes.ok ? await profileRes.json() : null;
+        const secretRes = await fetch('/api/user/agent-secret', { headers });
         if (requestSeq !== welcomeSetupRequestSeq || requestToken !== (authStore.token || '')) return;
-        if (profileData) welcomeProfile.value = profileData;
         if (!secretRes.ok) {
           let message = '';
           try { message = (await secretRes.json())?.error || ''; } catch {}
@@ -907,12 +871,6 @@ export default {
           welcomeSetupPromise = null;
         });
       return welcomeSetupPromise;
-    };
-
-    const copyWelcomeCommand = async (text) => {
-      if (!text) return;
-      try { await navigator.clipboard.writeText(text); }
-      catch (err) { console.warn('Failed to copy welcome setup command:', err); }
     };
 
     const fallbackUiKeys = new WeakMap();
@@ -2187,12 +2145,9 @@ export default {
       questionRX,
       refreshSession,
       onlineAgents,
-      welcomeInstallCommand,
-      welcomeLlmCommand,
-      welcomeServiceCommand,
+      welcomeAgentSecret,
       welcomeSetupLoading,
       welcomeSetupError,
-      copyWelcomeCommand,
       turnGroups,
       messageBlocks,
       virtualTranscriptIdentity,

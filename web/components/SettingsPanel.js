@@ -2,10 +2,7 @@ import { useAuthStore } from '../stores/auth.js';
 import { isMobile, isInAlipay, isInWeChat } from '../utils/device.js';
 import {
   getAgentContainerCommand,
-  getAgentInstallCommand,
-  getAgentLlmCommand,
   getAgentName,
-  getAgentServiceCommand,
   getServerWsUrl,
 } from '../utils/agentSetup.js';
 import {
@@ -15,6 +12,7 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 import DashboardTab from './DashboardTab.js';
+import AgentInstaller from './AgentInstaller.js';
 import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
 import McpTab from './McpTab.js';
@@ -24,7 +22,7 @@ import { confirmDialog } from '../utils/dialog.js';
 
 export default {
   name: 'SettingsPanel',
-  components: { DashboardTab, VpCrudPanel, SearchSettingsTab, McpTab, UserShortcutsSettings },
+  components: { DashboardTab, AgentInstaller, VpCrudPanel, SearchSettingsTab, McpTab, UserShortcutsSettings },
   props: {
     visible: Boolean,
     initialTab: { type: String, default: '' },
@@ -161,23 +159,8 @@ export default {
                   <span class="sp-warning" v-if="resetConfirm">{{ $t('settings.security.resetWarning') }}</span>
                 </div>
                 <div class="sp-cmd-group" :aria-label="$t('settings.security.agentSetupCommands')">
-                  <div class="sp-cmd-row">
-                    <span class="sp-cmd-label">{{ $t('settings.security.agentCmdInstall') }}</span>
-                    <code class="sp-cmd">{{ agentInstallCommand }}</code>
-                    <button class="sp-icon-btn" @click="copyText(agentInstallCommand)" :title="$t('common.copy')">
-                      <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                    </button>
-                  </div>
-                  <div class="sp-cmd-row">
-                    <span class="sp-cmd-label">{{ $t('settings.security.agentCmdService') }}</span>
-                    <template v-if="agentSecret">
-                      <code class="sp-cmd">{{ agentServiceCommand }}</code>
-                      <button class="sp-icon-btn" @click="copyText(agentServiceCommand)" :title="$t('common.copy')">
-                        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                      </button>
-                    </template>
-                    <span v-else class="sp-cmd sp-cmd-placeholder">{{ $t('settings.security.agentCmdNeedsSecret') }}</span>
-                  </div>
+                  <span class="sp-cmd-label">{{ $t('settings.security.agentCmdInstall') }}</span>
+                  <AgentInstaller :agent-secret="agentSecret || ''" :show-settings-link="false" />
                   <div class="sp-cmd-row">
                     <span class="sp-cmd-label">{{ $t('settings.security.agentCmdContainer') }}</span>
                     <template v-if="agentSecret">
@@ -189,13 +172,6 @@ export default {
                     <span v-else class="sp-cmd sp-cmd-placeholder">{{ $t('settings.security.agentCmdNeedsSecret') }}</span>
                   </div>
                   <p class="sp-desc">{{ $t('settings.security.agentCmdContainerDesc') }}</p>
-                  <div class="sp-cmd-row">
-                    <span class="sp-cmd-label">{{ $t('settings.security.agentCmdLlm') }}</span>
-                    <code class="sp-cmd">{{ agentLlmCommand }}</code>
-                    <button class="sp-icon-btn" @click="copyText(agentLlmCommand)" :title="$t('common.copy')">
-                      <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                    </button>
-                  </div>
                   <p class="sp-desc">{{ $t('settings.security.agentCmdLlmDesc') }}</p>
                 </div>
               </div>
@@ -669,25 +645,12 @@ export default {
     serverWsUrl() {
       return getServerWsUrl(location);
     },
-    agentInstallCommand() {
-      return getAgentInstallCommand();
-    },
-    agentServiceCommand() {
-      return getAgentServiceCommand({
-        profile: this.profile,
-        agentSecret: this.agentSecret,
-        serverWsUrl: this.serverWsUrl,
-      });
-    },
     agentContainerCommand() {
       return getAgentContainerCommand({
         profile: this.profile,
         agentSecret: this.agentSecret,
         serverWsUrl: this.serverWsUrl,
       });
-    },
-    agentLlmCommand() {
-      return getAgentLlmCommand();
     },
     ssoProviderRows() {
       const auth = this.authStore;

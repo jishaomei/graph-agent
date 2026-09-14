@@ -4,6 +4,11 @@ const TEST_FILE_PATTERN = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
 export const CORE_TEST_FILES = Object.freeze([
   'test/test-budget-gate.test.js',
   'test/agent-package-bin.test.js',
+  'test/agent-installer.test.js',
+  'test/agent-installer-service.test.js',
+  'test/agent-installer-powershell.test.js',
+  'test/server/installer-routes.test.js',
+  'test/web/agent-installer.test.js',
   'test/e2e-fixture-lifecycle.test.js',
   'test/agent/browser-runtime.test.js',
   'test/agent/connection-plaintext.test.js',
