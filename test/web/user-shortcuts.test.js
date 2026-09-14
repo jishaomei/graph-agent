@@ -74,7 +74,7 @@ const render = component => {
 };
 
 describe('owner-scoped user shortcuts', () => {
-  it('defaults to hidden with simple Alt bindings; shares one reactive state for the current auth store', () => {
+  it('defaults to active simple Alt bindings; shares one reactive state for the current auth store', () => {
     expect(shared()).toBe(useUserShortcuts());
     expect(shared().preferences.value).toEqual(defaultUserShortcuts());
     expect(shared().preferences.value.bindings).toEqual({
@@ -84,16 +84,15 @@ describe('owner-scoped user shortcuts', () => {
   });
   it('isolates owners synchronously, clears logout state, and restores only the returning owner', () => {
     const state = create();
-    expect(state.save({ showQuickSends: true, bindings: { terminal: 'Ctrl+Shift+Y' } })).toEqual({ ok: true });
+    expect(state.save({ bindings: { terminal: 'Ctrl+Shift+Y' } })).toEqual({ ok: true });
     globals.auth.userId = 'owner-b';
     expect(state.preferences.value).toEqual(defaultUserShortcuts());
     state.save({ bindings: { files: 'Alt+Shift+O' } });
     globals.auth.isAuthenticated = false;
     expect(state.preferences.value).toEqual(defaultUserShortcuts());
-    expect(state.save({ showQuickSends: true })).toMatchObject({ ok: false, error: 'unauthenticated' });
+    expect(state.save({ bindings: { terminal: 'Alt+Y' } })).toMatchObject({ ok: false, error: 'unauthenticated' });
     globals.auth.userId = 'owner-a';
     globals.auth.isAuthenticated = true;
-    expect(state.preferences.value.showQuickSends).toBe(true);
     expect(state.preferences.value.bindings).toMatchObject({ terminal: 'Ctrl+Shift+Y', files: 'Alt+O' });
     expect(localStorage.length).toBe(2);
   });
@@ -104,8 +103,8 @@ describe('owner-scoped user shortcuts', () => {
     expect(state.reset()).toEqual({ ok: true });
     expect(state.preferences.value).toEqual(defaultUserShortcuts());
     const failing = create({ storage: () => { throw new Error('denied'); } });
-    expect(failing.save({ showQuickSends: true })).toEqual({ ok: false, error: 'storage' });
-    expect(failing.preferences.value.showQuickSends).toBe(false);
+    expect(failing.save({ bindings: { terminal: 'Alt+Y' } })).toEqual({ ok: false, error: 'storage' });
+    expect(failing.preferences.value).toEqual(defaultUserShortcuts());
   });
   it('migrates old recommendations while preserving explicit clears and custom bindings', () => {
     localStorage.setItem('yeaft:user-shortcuts:v1:owner-a', JSON.stringify({ bindings: {
@@ -122,6 +121,15 @@ describe('owner-scoped user shortcuts', () => {
       quickSend1: 'Alt+1', quickSend2: 'Alt+2', quickSend3: 'Alt+3', quickSend4: 'Alt+4', quickSend5: 'Alt+5',
     } }));
     expect(create().preferences.value.bindings).toMatchObject({ terminal: 'Alt+W', closeWorkbench: '' });
+  });
+  it('ignores the retired quick-send opt-in when loading an existing account', () => {
+    localStorage.setItem('yeaft:user-shortcuts:v2:owner-a', JSON.stringify({
+      showQuickSends: false,
+      bindings: { quickSend1: 'Alt+1', quickSend2: '' },
+    }));
+    const preferences = create().preferences.value;
+    expect(preferences).not.toHaveProperty('showQuickSends');
+    expect(preferences.bindings).toMatchObject({ quickSend1: 'Alt+1', quickSend2: '' });
   });
 });
 
@@ -222,8 +230,8 @@ describe('General settings and App runtime integration', () => {
   it('records, explains conflicts, clears and resets with accessible keyboard controls', async () => {
     shared();
     const wrapper = render(UserShortcutsSettings);
-    await wrapper.find('input').setValue(true);
-    expect(shared().preferences.value.showQuickSends).toBe(true);
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('active automatically');
     const record = wrapper.findAll('.user-shortcuts-record')[0];
     await record.trigger('click');
     record.element.dispatchEvent(key('Ctrl+T'));

@@ -39,11 +39,6 @@ export default {
     <section class="user-shortcuts-settings" aria-labelledby="user-shortcuts-title">
       <h3 id="user-shortcuts-title">{{ $t('userShortcuts.title') }}</h3>
       <p class="sp-desc">{{ $t('userShortcuts.scope') }}</p>
-      <label class="user-shortcuts-toggle">
-        <input type="checkbox" :checked="preferences.showQuickSends" :disabled="!ownerId"
-          @change="persist({ showQuickSends: $event.target.checked })" />
-        <span>{{ $t('userShortcuts.showQuickSends') }}</span>
-      </label>
       <p class="sp-desc">{{ $t('userShortcuts.quickSendHelp') }}</p>
       <p class="sp-desc" id="user-shortcuts-help">{{ $t('userShortcuts.help') }}</p>
       <div v-for="action in actions" :key="action" class="user-shortcuts-row">
