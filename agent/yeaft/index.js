@@ -27,6 +27,15 @@ export { searchMessages } from './conversation/search.js';
 export { runStopHooks } from './stop-hooks.js';
 export { MCPManager, createMCPManager } from './mcp.js';
 export { SkillManager, createSkillManager, parseSkill, serializeSkill } from './skills.js';
+export {
+  SharedAgentDefinitionError,
+  buildSharedAgentSkillDiagnostics,
+  listSharedAgentDefinitions,
+  readSharedAgentDefinition,
+  resolveSharedAgentSkillDirs,
+  saveSharedAgentDefinition,
+  sharedAgentDefinitionsRoot,
+} from './shared-agents/definition-store.js';
 export { defineTool } from './tools/types.js';
 export { ToolRegistry, createEmptyRegistry } from './tools/registry.js';
 export { createFullRegistry, allTools } from './tools/index.js';

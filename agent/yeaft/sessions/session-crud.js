@@ -64,6 +64,7 @@ import {
 import { retireConversationHistoryIndex } from '../conversation/history-index.js';
 import { ensureSessionConfigFile, saveSessionConfig, loadSessionConfig } from './session-config.js';
 import { ConversationStore } from '../conversation/persist.js';
+import { readSharedAgentDefinition } from '../shared-agents/definition-store.js';
 import { repairSessionStore } from './recovery.js';
 import {
   addOrUpdateManifestSession,
@@ -554,6 +555,36 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
   }
   if (!defaultVpId) defaultVpId = roster[0] || null;
 
+  const sharedAgentDefinitionId = typeof input.sharedAgentDefinitionId === 'string'
+    ? input.sharedAgentDefinitionId.trim() : '';
+  let sharedAgentDefinitionRevision = Number.isInteger(input.sharedAgentDefinitionRevision)
+    && input.sharedAgentDefinitionRevision > 0 ? input.sharedAgentDefinitionRevision : null;
+  let sharedAgentDefinitionName = '';
+  let sharedAgentInstruction = '';
+  if (sharedAgentDefinitionId) {
+    const definition = readSharedAgentDefinition(
+      yeaftDir,
+      sharedAgentDefinitionId,
+      sharedAgentDefinitionRevision,
+    );
+    if (!definition) {
+      throw new SessionCrudError(
+        'shared_agent_not_found',
+        null,
+        `Shared Agent definition not found: ${sharedAgentDefinitionId}`,
+      );
+    }
+    sharedAgentDefinitionRevision = definition.revision;
+    sharedAgentDefinitionName = definition.name;
+    sharedAgentInstruction = definition.instruction;
+  } else if (sharedAgentDefinitionRevision) {
+    throw new SessionCrudError(
+      'invalid_shared_agent_reference',
+      null,
+      'Shared Agent revision requires a definition id',
+    );
+  }
+
   const id = makeSessionId(name);
   const root = sessionsRoot(groupYeaftDir);
   if (existsSync(join(root, id))) {
@@ -562,7 +593,16 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
   }
 
   const handle = createSession(root, {
-    id, name, roster, defaultVpId, workDir: normalizedWorkDir, workspaceKey,
+    id,
+    name,
+    roster,
+    defaultVpId,
+    workDir: normalizedWorkDir,
+    workspaceKey,
+    sharedAgentDefinitionId,
+    sharedAgentDefinitionRevision,
+    sharedAgentDefinitionName,
+    sharedAgentInstruction,
   });
   const meta = handle.getMeta();
   handle.close();
@@ -622,6 +662,8 @@ export function copySession(yeaftDir, sourceSessionId, options = {}) {
     roster: Array.isArray(sourceMeta.roster) ? sourceMeta.roster : [],
     defaultVpId: sourceMeta.defaultVpId || null,
     workDir: sourceMeta.workDir || '',
+    sharedAgentDefinitionId: sourceMeta.sharedAgentDefinitionId || '',
+    sharedAgentDefinitionRevision: sourceMeta.sharedAgentDefinitionRevision || null,
   }, { ...options, preserveEmptyRoster: true });
 
   try {

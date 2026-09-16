@@ -1669,6 +1669,28 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (typeof msg.type === 'string' && (msg.type.startsWith('yeaft_') || msg.type.startsWith('unify_'))) {
         const relayType = msg.type.startsWith('unify_') ? `yeaft_${msg.type.slice('unify_'.length)}` : msg.type;
         const relayAgentId = msg.agentId || client.currentAgent;
+        if (relayType === 'yeaft_shared_agent_definition'
+            && !['list', 'read', 'save', 'publish'].includes(msg.op)) {
+          await sendToWebClient(client, {
+            type: 'yeaft_shared_agent_definition_result', agentId: relayAgentId || null,
+            requestId: msg.requestId || null, op: msg.op || null, ok: false,
+            error: { code: 'invalid_op', message: 'Unknown Shared Agent definition operation.' },
+          });
+          return true;
+        }
+        if (relayType === 'yeaft_shared_agent_definition'
+            && (msg.op === 'save' || msg.op === 'publish')
+            && client.role !== 'admin') {
+          await sendToWebClient(client, {
+            type: 'yeaft_shared_agent_definition_result',
+            agentId: relayAgentId || null,
+            requestId: msg.requestId || null,
+            op: msg.op,
+            ok: false,
+            error: { code: 'admin_required', message: 'Admin role is required to modify Shared Agent definitions.' },
+          });
+          return true;
+        }
         if (msg.perfTraceId) {
           recordPerfTraceEvent({
             traceId: msg.perfTraceId,
@@ -1767,7 +1789,9 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         // Direct catalog replies are request-scoped. Carry the browser client
         // identity through the Agent so another owner tab cannot accidentally
         // consume a response for this picker request.
-        if (relayType === 'yeaft_plugin_catalog' || relayType === 'yeaft_managed_skill') {
+        if (relayType === 'yeaft_plugin_catalog'
+            || relayType === 'yeaft_managed_skill'
+            || relayType === 'yeaft_shared_agent_definition') {
           rest._requestClientId = clientId;
         }
         if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {

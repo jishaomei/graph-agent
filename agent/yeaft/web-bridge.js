@@ -33,6 +33,14 @@ import {
   removeManagedSkill,
 } from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
+import {
+  listSharedAgentDefinitions,
+  publishSharedAgentDefinition,
+  readSharedAgentDefinition,
+  resolveSharedAgentSkillDirs,
+  saveSharedAgentDraft,
+  SharedAgentDefinitionError,
+} from './shared-agents/definition-store.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
@@ -394,8 +402,8 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
           const metaRoot = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
           const meta = loadSessionMeta(join(sessionsRoot(metaRoot), sessionId));
           const workDir = normalizeSessionWorkDir(meta?.workDir);
-          if (workDir) {
-            const scheduled = scheduleProjectRuntimeLoad(workDir);
+          if (workDir || meta?.sharedAgentDefinitionId) {
+            const scheduled = scheduleProjectRuntimeLoad(workDir, meta);
             projectRuntime = scheduled && typeof scheduled.then === 'function'
               ? await scheduled
               : scheduled;
@@ -773,8 +781,39 @@ function normalizeSessionWorkDir(workDir) {
   return typeof workDir === 'string' && workDir.trim() ? workDir.trim() : '';
 }
 
-function projectRuntimeKey(workDir) {
-  return normalizeSessionWorkDir(workDir) || '__agent_cwd__';
+function resolveSharedAgentRuntime(sessionMeta, yeaftDir) {
+  const definitionId = typeof sessionMeta?.sharedAgentDefinitionId === 'string'
+    ? sessionMeta.sharedAgentDefinitionId.trim() : '';
+  if (!definitionId) return { definition: null, skillDirs: [], skillSources: [], errors: [] };
+  const boundRevision = Number.isInteger(sessionMeta?.sharedAgentDefinitionRevision)
+    ? sessionMeta.sharedAgentDefinitionRevision : null;
+  if (!boundRevision) {
+    throw new SessionCrudError(
+      'invalid_shared_agent_reference',
+      sessionMeta?.id || null,
+      `Shared Agent Session is missing a locked revision: ${definitionId}`,
+    );
+  }
+  const definition = readSharedAgentDefinition(yeaftDir, definitionId, boundRevision);
+  if (!definition) {
+    throw new SessionCrudError(
+      'shared_agent_revision_not_found',
+      sessionMeta?.id || null,
+      `Shared Agent revision not found: ${definitionId}@${boundRevision}`,
+    );
+  }
+  const resolved = resolveSharedAgentSkillDirs(definition);
+  return { definition, skillDirs: resolved.dirs, skillSources: resolved.sources, errors: resolved.errors };
+}
+
+function projectRuntimeKey(workDir, sharedAgentDefinitionId = '', sharedAgentDefinitionRevision = null) {
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir) || '__agent_cwd__';
+  if (!sharedAgentDefinitionId) return normalizedWorkDir;
+  return JSON.stringify([
+    normalizedWorkDir,
+    sharedAgentDefinitionId,
+    sharedAgentDefinitionRevision || null,
+  ]);
 }
 
 function createThreadId() {
@@ -927,7 +966,11 @@ function activateBaseRuntime(owner = captureRuntimeOwner(), { reloadSkills = tru
 function activateProjectRuntime(runtime, owner = captureRuntimeOwner(), { reloadSkills = true } = {}) {
   if (!runtime) return activateBaseRuntime(owner, { reloadSkills });
   if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
-  const runtimeKey = projectRuntimeKey(runtime.workDir);
+  const runtimeKey = projectRuntimeKey(
+    runtime.workDir,
+    runtime.sharedAgentDefinitionId,
+    runtime.sharedAgentDefinitionRevision,
+  );
   const switchingRuntime = activeRuntimeKey !== runtimeKey;
   const reload = reloadSkills && switchingRuntime
     ? reloadRuntimeSkillManager(owner, runtime.skillManager, runtime.status)
@@ -2853,26 +2896,36 @@ function scheduleBaseRuntimeLoad() {
   return promise;
 }
 
-async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner()) {
+async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(), sessionMeta = null) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir) {
+  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!normalizedWorkDir && !sharedAgent.definition) {
     activateBaseRuntime(owner);
     return null;
   }
-  const key = projectRuntimeKey(normalizedWorkDir);
+  const key = projectRuntimeKey(
+    normalizedWorkDir,
+    sharedAgent.definition?.id,
+    sharedAgent.definition?.revision,
+  );
   const cached = projectRuntimes.get(key);
   if (runtimeBelongsToOwner(cached, owner)) {
     activateProjectRuntime(cached, owner);
     return cached;
   }
 
-  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
-  const skillRoots = normalizedWorkDir !== process.cwd()
+  const skillRoots = normalizedWorkDir && normalizedWorkDir !== process.cwd()
     ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
-    : normalizedWorkDir;
-  const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
+    : (normalizedWorkDir || process.cwd());
+  const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots, {
+    sharedAgentSources: sharedAgent.skillSources,
+  });
+  if (sharedAgent.errors.length > 0) {
+    console.warn(`[Yeaft] Shared Agent ${sharedAgent.definition?.id || ''} Skill source warnings: ${sharedAgent.errors.join('; ')}`);
+  }
   const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
   const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
     rawMcpConfig,
@@ -2884,6 +2937,8 @@ async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(
     generation: owner.generation,
     ownerSession,
     workDir: normalizedWorkDir,
+    sharedAgentDefinitionId: sharedAgent.definition?.id || '',
+    sharedAgentDefinitionRevision: sharedAgent.definition?.revision || null,
     skillManager,
     mcpManager,
     mcpStatus,
@@ -2933,21 +2988,28 @@ async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(
   return runtimeBelongsToOwner(runtime, owner) && projectRuntimes.get(key) === runtime ? runtime : null;
 }
 
-function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
-  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner));
+function loadProjectRuntime(workDir, owner = captureRuntimeOwner(), sessionMeta = null) {
+  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner, sessionMeta));
 }
 
-function scheduleProjectRuntimeLoad(workDir) {
+function scheduleProjectRuntimeLoad(workDir, sessionMeta = null) {
   const owner = captureRuntimeOwner();
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir || !owner) return null;
-  const key = projectRuntimeKey(normalizedWorkDir);
+  if (!owner) return null;
+  const yeaftDir = ctx.CONFIG?.yeaftDir || owner.ownerSession?.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!normalizedWorkDir && !sharedAgent.definition) return null;
+  const key = projectRuntimeKey(
+    normalizedWorkDir,
+    sharedAgent.definition?.id,
+    sharedAgent.definition?.revision,
+  );
   const cached = projectRuntimes.get(key);
   if (runtimeBelongsToOwner(cached, owner)) return cached;
   const current = projectRuntimeLoadPromises.get(key);
   if (current && loaderBelongsToOwner(current, owner)) return current;
   let promise;
-  promise = loadProjectRuntime(normalizedWorkDir, owner)
+  promise = loadProjectRuntime(normalizedWorkDir, owner, sessionMeta)
     .catch((err) => {
       console.warn('[Yeaft] async project runtime load failed for %s: %s', normalizedWorkDir, err?.message || err);
       return null;
@@ -2967,17 +3029,20 @@ function getProjectRuntimeForTurn(sessionMeta) {
   const owner = captureRuntimeOwner();
   if (!owner) return null;
   const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
-  if (!workDir) {
+  const yeaftDir = ctx.CONFIG?.yeaftDir || owner.ownerSession?.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!workDir && !sharedAgent.definition) {
     if (!runtimeBelongsToOwner(baseRuntime, owner)) scheduleBaseRuntimeLoad();
     activateBaseRuntime(owner);
     return null;
   }
-  const cached = projectRuntimes.get(projectRuntimeKey(workDir)) || null;
+  const key = projectRuntimeKey(workDir, sharedAgent.definition?.id, sharedAgent.definition?.revision);
+  const cached = projectRuntimes.get(key) || null;
   if (runtimeBelongsToOwner(cached, owner)) {
     activateProjectRuntime(cached, owner);
     return cached;
   }
-  scheduleProjectRuntimeLoad(workDir);
+  scheduleProjectRuntimeLoad(workDir, sessionMeta);
   // Do not let a previous workDir's MCP tools leak into this turn while the
   // requested project runtime is still loading in the background.
   activateBaseRuntime(owner);
@@ -3339,10 +3404,17 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
   return context;
 }
 
+function publicSessionMeta(meta) {
+  if (!meta || typeof meta !== 'object') return meta;
+  const { sharedAgentInstruction: _sharedAgentInstruction, ...publicMeta } = meta;
+  return publicMeta;
+}
+
 function sendSessionCrudResult(payload) {
-  const next = payload && payload.ok && Array.isArray(payload.sessions)
-    ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions) }
+  let next = payload && payload.ok && Array.isArray(payload.sessions)
+    ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions).map(publicSessionMeta) }
     : payload;
+  if (next?.session) next = { ...next, session: publicSessionMeta(next.session) };
   sendSessionEvent({ type: 'session_crud_result', ...next });
 }
 
@@ -3562,6 +3634,7 @@ function sessionErrorPayload(err) {
   if (err instanceof SessionCrudError) code = err.code;
   else if (err instanceof SessionConfigError) code = err.code;
   else if (err instanceof ProjectStoreError) code = err.code;
+  else if (err instanceof SharedAgentDefinitionError) code = err.code;
   return {
     code,
     sessionId: err && err.sessionId,
@@ -3634,11 +3707,60 @@ export function handleYeaftProjectMutation(msg) {
   }
 }
 
-export function handleYeaftCreateSession(msg) {
-  const requestId = msg && msg.requestId;
-  const payload = (msg && msg.payload) || {};
+export async function handleYeaftSharedAgentDefinition(msg) {
+  const requestId = msg?.requestId || null;
+  const requestClientId = msg?._requestClientId || null;
+  const op = msg?.op;
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let result;
+    if (op === 'list') result = { definitions: listSharedAgentDefinitions(yeaftDir) };
+    else if (op === 'read') result = { definition: readSharedAgentDefinition(yeaftDir, msg.id, msg.revision ?? 'latest') };
+    else if (op === 'save') result = { definition: saveSharedAgentDraft(yeaftDir, msg.definition) };
+    else if (op === 'publish') result = { definition: publishSharedAgentDefinition(yeaftDir, msg.id || msg.definitionId) };
+    else throw new SharedAgentDefinitionError('invalid_op', 'Unknown Shared Agent definition operation');
+    await sendToServer({
+      type: 'yeaft_shared_agent_definition_result', op, requestId, ok: true, ...result,
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
+    });
+  } catch (err) {
+    await sendToServer({
+      type: 'yeaft_shared_agent_definition_result', op, requestId, ok: false,
+      error: sessionErrorPayload(err),
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
+    });
+  }
+}
+
+export function handleYeaftCreateSession(msg) {
+  const requestId = msg && msg.requestId;
+  const incoming = (msg && msg.payload) || {};
+  try {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let payload = incoming;
+    if (incoming.sharedAgentDefinitionId != null) {
+      const definition = readSharedAgentDefinition(
+        yeaftDir,
+        incoming.sharedAgentDefinitionId,
+        incoming.sharedAgentDefinitionRevision ?? null,
+      );
+      if (!definition) {
+        throw new SessionCrudError(
+          'shared_agent_not_found',
+          null,
+          `Shared Agent definition not found: ${incoming.sharedAgentDefinitionId}`,
+        );
+      }
+      payload = {
+        ...incoming,
+        name: definition.name,
+        roster: definition.roster,
+        defaultVpId: definition.defaultVpId || null,
+        workDir: definition.workDir || '',
+        sharedAgentDefinitionId: definition.id,
+        sharedAgentDefinitionRevision: definition.revision,
+      };
+    }
     const group = createSessionFromSpec(yeaftDir, payload, configuredVpPaths());
     recordAgentSessionCreated();
     group.config = loadSessionConfig(yeaftDir, group.id);
@@ -4889,7 +5011,7 @@ async function runYeaftSessionSend(msg) {
       console.warn('[Yeaft] yeaft_session_chat: migrated session reopen failed', err?.message || err);
     }
   }
-  scheduleProjectRuntimeLoad(sessionMetaForRuntime?.workDir);
+  scheduleProjectRuntimeLoad(sessionMetaForRuntime?.workDir, sessionMetaForRuntime);
   traceDuration('session_send.ensure_session_loaded', ensureSessionStart);
 
 
@@ -5187,8 +5309,19 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   // task-334-session-editor: surface the session announcement to the engine so
   // buildWorkerPrompt can inject it as a CLAUDE.md-style shared prefix.
   // Empty/missing reads as '' and prompts.js skips the section.
-  if (sessionMeta && typeof sessionMeta.announcement === 'string') {
-    out.sessionAnnouncement = sessionMeta.announcement;
+  if (sessionMeta) {
+    const announcement = typeof sessionMeta.announcement === 'string'
+      ? sessionMeta.announcement.trim()
+      : '';
+    const sharedAgentInstruction = typeof sessionMeta.sharedAgentInstruction === 'string'
+      ? sessionMeta.sharedAgentInstruction.trim()
+      : '';
+    out.sessionAnnouncement = [
+      sharedAgentInstruction
+        ? `[Shared Agent Instruction: ${sessionMeta.sharedAgentDefinitionName || sessionMeta.sharedAgentDefinitionId || 'bound definition'}]\n${sharedAgentInstruction}`
+        : '',
+      announcement,
+    ].filter(Boolean).join('\n\n');
   }
   // Surface the session's configured working directory so the engine can
   // resolve CLAUDE.md / AGENTS.md at that path and inject it as a
@@ -5198,7 +5331,18 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
     out.workDir = sessionMeta.workDir.trim();
   }
   const persona = buildVpPersona(resolvedVpId);
-  if (persona) out.vpPersona = persona;
+  if (persona) {
+    const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+    out.vpPersona = sharedAgent.definition
+      ? {
+          ...persona,
+          runtimePreamble: [persona.runtimePreamble, sharedAgent.definition.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
+      : persona;
+  }
   if (sessionCoordinator && typeof sessionCoordinator.ingest === 'function') {
     try {
       out.router = createRouter({
@@ -5298,10 +5442,17 @@ export async function ensureSessionLoaded(opts = {}) {
 
     ensureYeaftConversationId();
     scheduleBaseRuntimeLoad();
-    let bootProjectRuntime = normalizedWorkDir ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null : null;
-    if (normalizedWorkDir && !bootProjectRuntime) {
-      scheduleProjectRuntimeLoad(normalizedWorkDir);
-      bootProjectRuntime = projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null;
+    const bootSharedAgent = resolveSharedAgentRuntime(opts?.sessionMeta, yeaftDir || session.yeaftDir || DEFAULT_YEAFT_DIR);
+    const bootRuntimeKey = projectRuntimeKey(
+      normalizedWorkDir,
+      bootSharedAgent.definition?.id,
+      bootSharedAgent.definition?.revision,
+    );
+    const needsScopedRuntime = !!normalizedWorkDir || !!bootSharedAgent.definition;
+    let bootProjectRuntime = needsScopedRuntime ? projectRuntimes.get(bootRuntimeKey) || null : null;
+    if (needsScopedRuntime && !bootProjectRuntime) {
+      scheduleProjectRuntimeLoad(normalizedWorkDir, opts?.sessionMeta);
+      bootProjectRuntime = projectRuntimes.get(bootRuntimeKey) || null;
     }
     const bootStatus = mergedStatusForProjectRuntime(bootProjectRuntime);
     hydrateYeaftStatusFromSession({ ...session, status: bootStatus }, { reason: 'session_ready', emitEvent: true });
@@ -5676,7 +5827,13 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
       }
       let turnSessionMeta = null;
       try { turnSessionMeta = sessionCoordinator?.group?.getMeta?.() || null; } catch { turnSessionMeta = null; }
-      const projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
+      let projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
+      if (!projectRuntime && turnSessionMeta?.sharedAgentDefinitionId) {
+        // Identity and safety Skills must be present on the first turn. MCP
+        // connection may still take time, but the scoped runtime publication is
+        // the authoritative boundary and must complete before provider execution.
+        projectRuntime = await scheduleProjectRuntimeLoad(turnSessionMeta.workDir, turnSessionMeta);
+      }
 
       vpEngine = getOrCreateVpEngine(sessionId, vpId, threadId);
       if (escalationState) {
