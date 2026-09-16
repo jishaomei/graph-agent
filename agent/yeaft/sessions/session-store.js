@@ -150,6 +150,10 @@ export function createSession(sessionsRoot, spec) {
       ? spec.sharedAgentDefinitionId.trim() : '',
     sharedAgentDefinitionRevision: Number.isInteger(spec.sharedAgentDefinitionRevision)
       && spec.sharedAgentDefinitionRevision > 0 ? spec.sharedAgentDefinitionRevision : null,
+    sharedAgentDefinitionName: typeof spec.sharedAgentDefinitionName === 'string'
+      ? spec.sharedAgentDefinitionName.trim() : '',
+    sharedAgentInstruction: typeof spec.sharedAgentInstruction === 'string'
+      ? spec.sharedAgentInstruction : '',
     createdAt: spec.createdAt || new Date().toISOString(),
     metadataUpdatedAt: spec.metadataUpdatedAt || spec.createdAt || new Date().toISOString(),
   };
@@ -178,6 +182,8 @@ export function loadSessionMeta(dir) {
     if (!Number.isInteger(parsed.sharedAgentDefinitionRevision) || parsed.sharedAgentDefinitionRevision < 1) {
       parsed.sharedAgentDefinitionRevision = null;
     }
+    if (typeof parsed.sharedAgentDefinitionName !== 'string') parsed.sharedAgentDefinitionName = '';
+    if (typeof parsed.sharedAgentInstruction !== 'string') parsed.sharedAgentInstruction = '';
     return parsed;
   } catch {
     return null;
@@ -223,6 +229,12 @@ function validateMeta(meta) {
   if (meta.sharedAgentDefinitionRevision != null
       && (!Number.isInteger(meta.sharedAgentDefinitionRevision) || meta.sharedAgentDefinitionRevision < 1)) {
     throw new Error('session.sharedAgentDefinitionRevision must be a positive integer or null');
+  }
+  if (meta.sharedAgentDefinitionName != null && typeof meta.sharedAgentDefinitionName !== 'string') {
+    throw new Error('session.sharedAgentDefinitionName must be string');
+  }
+  if (meta.sharedAgentInstruction != null && typeof meta.sharedAgentInstruction !== 'string') {
+    throw new Error('session.sharedAgentInstruction must be string');
   }
 }
 

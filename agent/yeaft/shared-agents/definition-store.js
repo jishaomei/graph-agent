@@ -9,6 +9,7 @@ import {
 import { dirname, join, resolve } from 'path';
 import { execFileSync } from 'node:child_process';
 import { writeAtomic } from '../storage/atomic.js';
+import { validateVpId } from '../sessions/ids.js';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const DEFINITION_FILE = 'definition.json';
@@ -107,6 +108,20 @@ export function normalizeSharedAgentDefinition(input, { previous = null, now = n
   const skillSources = Array.isArray(input?.skillSources)
     ? input.skillSources.map(normalizeSkillSource)
     : [];
+  const roster = normalizeStringArray(input?.roster, 'roster');
+  for (const vpId of roster) {
+    if (!validateVpId(vpId).ok) {
+      throw new SharedAgentDefinitionError('invalid_vp_id', `Invalid roster VP id: ${vpId}`, id);
+    }
+  }
+  const defaultVpId = normalizeString(input?.defaultVpId);
+  if (defaultVpId && (!validateVpId(defaultVpId).ok || !roster.includes(defaultVpId))) {
+    throw new SharedAgentDefinitionError(
+      'invalid_default_vp_id',
+      'defaultVpId must be a valid member of roster',
+      id,
+    );
+  }
   const previousRevision = Number(previous?.revision) || 0;
   return {
     id,
@@ -114,8 +129,8 @@ export function normalizeSharedAgentDefinition(input, { previous = null, now = n
     description: normalizeString(input?.description),
     instruction,
     revision: previousRevision + 1,
-    roster: normalizeStringArray(input?.roster, 'roster'),
-    defaultVpId: normalizeString(input?.defaultVpId),
+    roster,
+    defaultVpId,
     workDir: normalizeString(input?.workDir),
     skills: normalizeStringArray(input?.skills, 'skills'),
     skillSources,

@@ -559,6 +559,8 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
     ? input.sharedAgentDefinitionId.trim() : '';
   let sharedAgentDefinitionRevision = Number.isInteger(input.sharedAgentDefinitionRevision)
     && input.sharedAgentDefinitionRevision > 0 ? input.sharedAgentDefinitionRevision : null;
+  let sharedAgentDefinitionName = '';
+  let sharedAgentInstruction = '';
   if (sharedAgentDefinitionId) {
     const definition = readSharedAgentDefinition(
       yeaftDir,
@@ -573,6 +575,8 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
       );
     }
     sharedAgentDefinitionRevision = definition.revision;
+    sharedAgentDefinitionName = definition.name;
+    sharedAgentInstruction = definition.instruction;
   } else if (sharedAgentDefinitionRevision) {
     throw new SessionCrudError(
       'invalid_shared_agent_reference',
@@ -597,6 +601,8 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
     workspaceKey,
     sharedAgentDefinitionId,
     sharedAgentDefinitionRevision,
+    sharedAgentDefinitionName,
+    sharedAgentInstruction,
   });
   const meta = handle.getMeta();
   handle.close();

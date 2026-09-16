@@ -3406,7 +3406,8 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
 
 function publicSessionMeta(meta) {
   if (!meta || typeof meta !== 'object') return meta;
-  return meta;
+  const { sharedAgentInstruction: _sharedAgentInstruction, ...publicMeta } = meta;
+  return publicMeta;
 }
 
 function sendSessionCrudResult(payload) {
@@ -5309,9 +5310,18 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   // buildWorkerPrompt can inject it as a CLAUDE.md-style shared prefix.
   // Empty/missing reads as '' and prompts.js skips the section.
   if (sessionMeta) {
-    out.sessionAnnouncement = typeof sessionMeta.announcement === 'string'
+    const announcement = typeof sessionMeta.announcement === 'string'
       ? sessionMeta.announcement.trim()
       : '';
+    const sharedAgentInstruction = typeof sessionMeta.sharedAgentInstruction === 'string'
+      ? sessionMeta.sharedAgentInstruction.trim()
+      : '';
+    out.sessionAnnouncement = [
+      sharedAgentInstruction
+        ? `[Shared Agent Instruction: ${sessionMeta.sharedAgentDefinitionName || sessionMeta.sharedAgentDefinitionId || 'bound definition'}]\n${sharedAgentInstruction}`
+        : '',
+      announcement,
+    ].filter(Boolean).join('\n\n');
   }
   // Surface the session's configured working directory so the engine can
   // resolve CLAUDE.md / AGENTS.md at that path and inject it as a

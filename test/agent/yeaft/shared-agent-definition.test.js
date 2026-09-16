@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildSharedAgentSkillDiagnostics,
@@ -27,7 +28,19 @@ function write(root, relativePath, content) {
 function skill(name, body) {
   return `---\nname: ${name}\ndescription: ${name} description\n---\n\n${body}\n`;
 }
-function definition(repositoryPath) {
+function commitRepository(repositoryPath) {
+  const git = (...args) => execFileSync('git', ['-C', repositoryPath, ...args], {
+    encoding: 'utf8',
+    windowsHide: true,
+  }).trim();
+  git('init');
+  git('config', 'user.email', 'shared-agent@example.test');
+  git('config', 'user.name', 'Shared Agent Test');
+  git('add', '.');
+  git('commit', '-m', 'test fixture');
+  return git('rev-parse', 'HEAD');
+}
+function definition(repositoryPath, revision = '0a96251d50f0cca48bb5e3cb0145fe8b8f84433c') {
   return {
     id: 'gcs-oncall',
     name: 'GCS Shared On-call Agent',
@@ -36,7 +49,7 @@ function definition(repositoryPath) {
     skillSources: [{
       repository: 'https://dev.azure.com/O365Exchange/O365%20Core/_git/GraphConnectors',
       repositoryPath,
-      revision: '0a96251d50f0cca48bb5e3cb0145fe8b8f84433c',
+      revision,
       include: ['**/SKILL.md'],
     }],
     toolPolicy: {
@@ -83,7 +96,8 @@ describe('SharedAgentDefinition store', () => {
     write(repository, '.github/skills/gcs-oncall/SKILL.md', skill('gcs-oncall', 'GITHUB_VERSION'));
     write(repository, '.agents/skills/gcs-oncall/SKILL.md', skill('gcs-oncall', 'AGENTS_VERSION'));
     write(repository, 'Tools/metrics/skills/monitor/SKILL.md', skill('monitor', 'MONITOR_VERSION'));
-    const saved = saveSharedAgentDefinition(yeaftDir, definition(repository));
+    const revision = commitRepository(repository);
+    const saved = saveSharedAgentDefinition(yeaftDir, definition(repository, revision));
 
     const resolved = resolveSharedAgentSkillDirs(saved);
     expect(resolved.errors).toEqual([]);
