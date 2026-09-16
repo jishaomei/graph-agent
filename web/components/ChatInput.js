@@ -739,7 +739,7 @@ export default {
       });
     };
 
-    const send = (quickSend = null) => {
+    const send = async (quickSend = null) => {
       if (!canSend.value) return;
       // Vue's ordinary send event has no preset; never treat a DOM event as configuration.
       if (!quickSend || typeof quickSend.model !== 'string') quickSend = null;
@@ -763,9 +763,9 @@ export default {
           }));
 
         const attachmentPayload = attachmentInfos.length > 0 ? attachmentInfos : undefined;
-        const accepted = quickSend
+        const accepted = await (quickSend
           ? props.sendFn(trimmed, attachmentPayload, props.quote, quickSend)
-          : props.quote ? props.sendFn(trimmed, attachmentPayload, props.quote) : props.sendFn(trimmed, attachmentPayload);
+          : props.quote ? props.sendFn(trimmed, attachmentPayload, props.quote) : props.sendFn(trimmed, attachmentPayload));
         if (accepted === false) return;
 
         attachments.value = [];

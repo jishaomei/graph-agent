@@ -2,6 +2,7 @@ import { confirmDialog } from '../utils/dialog.js';
 import LlmTab from './LlmTab.js';
 import ModernSelect from './ModernSelect.js';
 import QuickSendSettings from './QuickSendSettings.js';
+import SharedAgentsSettings from './SharedAgentsSettings.js';
 
 const DEFAULT_TELEMETRY = Object.freeze({
   enabled: true,
@@ -14,7 +15,7 @@ const DEFAULT_TELEMETRY = Object.freeze({
 
 export default {
   name: 'AgentSettingsPanel',
-  components: { LlmTab, ModernSelect, QuickSendSettings },
+  components: { LlmTab, ModernSelect, QuickSendSettings, SharedAgentsSettings },
   props: {
     initialAgentId: { type: String, default: null },
     initialCategory: { type: String, default: 'operations' },
@@ -52,6 +53,10 @@ export default {
               <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'llm' }" @click="activeCategory = 'llm'">
                 <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M12 2a4 4 0 0 1 3.87 3h.63a3.5 3.5 0 0 1 2.62 5.82A4 4 0 0 1 17 18.87V20h-2v-2h1a2 2 0 0 0 .45-3.95l-.8-.18.03-.82a1.5 1.5 0 0 0 1.72-2.43l-.68-.69.5-.84A1.5 1.5 0 0 0 16.5 7H14V6a2 2 0 1 0-4 0v12a2 2 0 1 0 4 0h2a4 4 0 0 1-7 2.65A4 4 0 0 1 4.13 15H4a3.5 3.5 0 0 1-1.7-6.56A4 4 0 0 1 9 4.35 4 4 0 0 1 12 2zM6 6a2 2 0 0 0-1.9 2.62l.3.9-.88.38A1.5 1.5 0 0 0 4 13h2v1a2 2 0 0 0 2 2V6.5A2 2 0 0 0 6 6z"/></svg>
                 {{ $t('agentSettings.categories.llm') }}
+              </button>
+              <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'shared-agents' }" @click="activeCategory = 'shared-agents'">
+                <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M12 2 14.7 8.3 21 11l-6.3 2.7L12 20l-2.7-6.3L3 11l6.3-2.7L12 2z"/></svg>
+                {{ $t('sharedAgents.title') }}
               </button>
               <button type="button" class="agent-settings-nav-item" :class="{ active: activeCategory === 'quick-send' }" @click="activeCategory = 'quick-send'">
                 <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="m13 2-9 12h7l-1 8 10-13h-7l1-7z"/></svg>
@@ -147,6 +152,8 @@ export default {
               </template>
             </section>
 
+            <SharedAgentsSettings v-else-if="activeCategory === 'shared-agents'" :agent-id="selectedAgentId" :can-manage="isAdmin" @saved="$emit('saved', $event)" />
+
             <QuickSendSettings v-else-if="activeCategory === 'quick-send'" :agent-id="selectedAgentId" @saved="$emit('saved', $event)" />
 
             <div v-else class="agent-settings-llm">
@@ -161,7 +168,7 @@ export default {
   `,
   data() {
     return {
-      activeCategory: ['operations', 'trace', 'llm', 'quick-send'].includes(this.initialCategory) ? this.initialCategory : 'operations',
+      activeCategory: ['operations', 'trace', 'llm', 'quick-send', 'shared-agents'].includes(this.initialCategory) ? this.initialCategory : 'operations',
       selectedAgentId: null,
       telemetryDraft: { ...DEFAULT_TELEMETRY },
       telemetryLoading: false,
@@ -175,6 +182,8 @@ export default {
   },
   computed: {
     store() { return Pinia.useChatStore(); },
+    authStore() { return Pinia.useAuthStore(); },
+    isAdmin() { return this.authStore.role === 'admin'; },
     agents() { return this.store.agents || []; },
     agentOptions() {
       return this.agents.map(agent => ({

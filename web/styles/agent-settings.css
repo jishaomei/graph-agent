@@ -318,6 +318,15 @@
 .agent-settings-switch input:checked + span::after { transform: translateX(16px); }
 .agent-settings-switch input:focus-visible + span { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
 .agent-settings-switch input:disabled + span { cursor: not-allowed; opacity: .55; }
+.shared-agents-manager-list { display: flex; flex-direction: column; gap: 2px; margin: 12px 0 18px; }
+.shared-agents-manager-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
+.shared-agents-manager-row:hover, .shared-agents-manager-row.active { background: var(--sidebar-hover); }
+.shared-agents-manager-row small { color: var(--text-muted); }
+.shared-agents-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.shared-agents-editor label span { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 11px; }
+.shared-agents-editor input, .shared-agents-editor textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 8px; font: inherit; }
+.shared-agents-editor textarea { resize: vertical; line-height: 1.5; }
+.shared-agents-editor-instruction, .shared-agents-editor .agent-settings-save-row { grid-column: 1 / -1; }
 
 .agent-settings-maintenance {
   display: flex;
