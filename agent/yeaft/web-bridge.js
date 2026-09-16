@@ -33,6 +33,10 @@ import {
   removeManagedSkill,
 } from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
+import {
+  readSharedAgentDefinition,
+  resolveSharedAgentSkillDirs,
+} from './shared-agents/definition-store.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
 import ctx from '../context.js';
@@ -394,8 +398,8 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
           const metaRoot = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
           const meta = loadSessionMeta(join(sessionsRoot(metaRoot), sessionId));
           const workDir = normalizeSessionWorkDir(meta?.workDir);
-          if (workDir) {
-            const scheduled = scheduleProjectRuntimeLoad(workDir);
+          if (workDir || meta?.sharedAgentDefinitionId) {
+            const scheduled = scheduleProjectRuntimeLoad(workDir, meta);
             projectRuntime = scheduled && typeof scheduled.then === 'function'
               ? await scheduled
               : scheduled;
@@ -773,8 +777,28 @@ function normalizeSessionWorkDir(workDir) {
   return typeof workDir === 'string' && workDir.trim() ? workDir.trim() : '';
 }
 
-function projectRuntimeKey(workDir) {
-  return normalizeSessionWorkDir(workDir) || '__agent_cwd__';
+function resolveSharedAgentRuntime(sessionMeta, yeaftDir) {
+  const definitionId = typeof sessionMeta?.sharedAgentDefinitionId === 'string'
+    ? sessionMeta.sharedAgentDefinitionId.trim() : '';
+  if (!definitionId) return { definition: null, skillDirs: [], skillSources: [], errors: [] };
+  const boundRevision = Number.isInteger(sessionMeta?.sharedAgentDefinitionRevision)
+    ? sessionMeta.sharedAgentDefinitionRevision : null;
+  const definition = readSharedAgentDefinition(yeaftDir, definitionId, boundRevision);
+  if (!definition) {
+    return { definition: null, skillDirs: [], skillSources: [], errors: [`Shared Agent definition not found: ${definitionId}`] };
+  }
+  const resolved = resolveSharedAgentSkillDirs(definition);
+  return { definition, skillDirs: resolved.dirs, skillSources: resolved.sources, errors: resolved.errors };
+}
+
+function projectRuntimeKey(workDir, sharedAgentDefinitionId = '', sharedAgentDefinitionRevision = null) {
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir) || '__agent_cwd__';
+  if (!sharedAgentDefinitionId) return normalizedWorkDir;
+  return JSON.stringify([
+    normalizedWorkDir,
+    sharedAgentDefinitionId,
+    sharedAgentDefinitionRevision || null,
+  ]);
 }
 
 function createThreadId() {
@@ -927,7 +951,11 @@ function activateBaseRuntime(owner = captureRuntimeOwner(), { reloadSkills = tru
 function activateProjectRuntime(runtime, owner = captureRuntimeOwner(), { reloadSkills = true } = {}) {
   if (!runtime) return activateBaseRuntime(owner, { reloadSkills });
   if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
-  const runtimeKey = projectRuntimeKey(runtime.workDir);
+  const runtimeKey = projectRuntimeKey(
+    runtime.workDir,
+    runtime.sharedAgentDefinitionId,
+    runtime.sharedAgentDefinitionRevision,
+  );
   const switchingRuntime = activeRuntimeKey !== runtimeKey;
   const reload = reloadSkills && switchingRuntime
     ? reloadRuntimeSkillManager(owner, runtime.skillManager, runtime.status)
@@ -2853,26 +2881,36 @@ function scheduleBaseRuntimeLoad() {
   return promise;
 }
 
-async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner()) {
+async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(), sessionMeta = null) {
   if (!isCurrentRuntimeOwner(owner)) return null;
   const ownerSession = owner.ownerSession;
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir) {
+  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!normalizedWorkDir && !sharedAgent.definition) {
     activateBaseRuntime(owner);
     return null;
   }
-  const key = projectRuntimeKey(normalizedWorkDir);
+  const key = projectRuntimeKey(
+    normalizedWorkDir,
+    sharedAgent.definition?.id,
+    sharedAgent.definition?.revision,
+  );
   const cached = projectRuntimes.get(key);
   if (runtimeBelongsToOwner(cached, owner)) {
     activateProjectRuntime(cached, owner);
     return cached;
   }
 
-  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
-  const skillRoots = normalizedWorkDir !== process.cwd()
+  const skillRoots = normalizedWorkDir && normalizedWorkDir !== process.cwd()
     ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
-    : normalizedWorkDir;
-  const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
+    : (normalizedWorkDir || process.cwd());
+  const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots, {
+    sharedAgentSources: sharedAgent.skillSources,
+  });
+  if (sharedAgent.errors.length > 0) {
+    console.warn(`[Yeaft] Shared Agent ${sharedAgent.definition?.id || ''} Skill source warnings: ${sharedAgent.errors.join('; ')}`);
+  }
   const rawMcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
   const { configured: configuredMcpConfig, effective: effectiveMcpConfig } = resolveMcpPluginPolicy(
     rawMcpConfig,
@@ -2884,6 +2922,8 @@ async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(
     generation: owner.generation,
     ownerSession,
     workDir: normalizedWorkDir,
+    sharedAgentDefinitionId: sharedAgent.definition?.id || '',
+    sharedAgentDefinitionRevision: sharedAgent.definition?.revision || null,
     skillManager,
     mcpManager,
     mcpStatus,
@@ -2933,21 +2973,28 @@ async function runProjectRuntimeTransition(workDir, owner = captureRuntimeOwner(
   return runtimeBelongsToOwner(runtime, owner) && projectRuntimes.get(key) === runtime ? runtime : null;
 }
 
-function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
-  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner));
+function loadProjectRuntime(workDir, owner = captureRuntimeOwner(), sessionMeta = null) {
+  return enqueueMcpTransition(() => runProjectRuntimeTransition(workDir, owner, sessionMeta));
 }
 
-function scheduleProjectRuntimeLoad(workDir) {
+function scheduleProjectRuntimeLoad(workDir, sessionMeta = null) {
   const owner = captureRuntimeOwner();
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir || !owner) return null;
-  const key = projectRuntimeKey(normalizedWorkDir);
+  if (!owner) return null;
+  const yeaftDir = ctx.CONFIG?.yeaftDir || owner.ownerSession?.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!normalizedWorkDir && !sharedAgent.definition) return null;
+  const key = projectRuntimeKey(
+    normalizedWorkDir,
+    sharedAgent.definition?.id,
+    sharedAgent.definition?.revision,
+  );
   const cached = projectRuntimes.get(key);
   if (runtimeBelongsToOwner(cached, owner)) return cached;
   const current = projectRuntimeLoadPromises.get(key);
   if (current && loaderBelongsToOwner(current, owner)) return current;
   let promise;
-  promise = loadProjectRuntime(normalizedWorkDir, owner)
+  promise = loadProjectRuntime(normalizedWorkDir, owner, sessionMeta)
     .catch((err) => {
       console.warn('[Yeaft] async project runtime load failed for %s: %s', normalizedWorkDir, err?.message || err);
       return null;
@@ -2967,17 +3014,20 @@ function getProjectRuntimeForTurn(sessionMeta) {
   const owner = captureRuntimeOwner();
   if (!owner) return null;
   const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
-  if (!workDir) {
+  const yeaftDir = ctx.CONFIG?.yeaftDir || owner.ownerSession?.yeaftDir || DEFAULT_YEAFT_DIR;
+  const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+  if (!workDir && !sharedAgent.definition) {
     if (!runtimeBelongsToOwner(baseRuntime, owner)) scheduleBaseRuntimeLoad();
     activateBaseRuntime(owner);
     return null;
   }
-  const cached = projectRuntimes.get(projectRuntimeKey(workDir)) || null;
+  const key = projectRuntimeKey(workDir, sharedAgent.definition?.id, sharedAgent.definition?.revision);
+  const cached = projectRuntimes.get(key) || null;
   if (runtimeBelongsToOwner(cached, owner)) {
     activateProjectRuntime(cached, owner);
     return cached;
   }
-  scheduleProjectRuntimeLoad(workDir);
+  scheduleProjectRuntimeLoad(workDir, sessionMeta);
   // Do not let a previous workDir's MCP tools leak into this turn while the
   // requested project runtime is still loading in the background.
   activateBaseRuntime(owner);
@@ -4889,7 +4939,7 @@ async function runYeaftSessionSend(msg) {
       console.warn('[Yeaft] yeaft_session_chat: migrated session reopen failed', err?.message || err);
     }
   }
-  scheduleProjectRuntimeLoad(sessionMetaForRuntime?.workDir);
+  scheduleProjectRuntimeLoad(sessionMetaForRuntime?.workDir, sessionMetaForRuntime);
   traceDuration('session_send.ensure_session_loaded', ensureSessionStart);
 
 
@@ -5198,7 +5248,18 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
     out.workDir = sessionMeta.workDir.trim();
   }
   const persona = buildVpPersona(resolvedVpId);
-  if (persona) out.vpPersona = persona;
+  if (persona) {
+    const yeaftDir = ctx.CONFIG?.yeaftDir || session?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const sharedAgent = resolveSharedAgentRuntime(sessionMeta, yeaftDir);
+    out.vpPersona = sharedAgent.definition
+      ? {
+          ...persona,
+          runtimePreamble: [persona.runtimePreamble, sharedAgent.definition.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
+      : persona;
+  }
   if (sessionCoordinator && typeof sessionCoordinator.ingest === 'function') {
     try {
       out.router = createRouter({
@@ -5298,10 +5359,17 @@ export async function ensureSessionLoaded(opts = {}) {
 
     ensureYeaftConversationId();
     scheduleBaseRuntimeLoad();
-    let bootProjectRuntime = normalizedWorkDir ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null : null;
-    if (normalizedWorkDir && !bootProjectRuntime) {
-      scheduleProjectRuntimeLoad(normalizedWorkDir);
-      bootProjectRuntime = projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null;
+    const bootSharedAgent = resolveSharedAgentRuntime(opts?.sessionMeta, yeaftDir || session.yeaftDir || DEFAULT_YEAFT_DIR);
+    const bootRuntimeKey = projectRuntimeKey(
+      normalizedWorkDir,
+      bootSharedAgent.definition?.id,
+      bootSharedAgent.definition?.revision,
+    );
+    const needsScopedRuntime = !!normalizedWorkDir || !!bootSharedAgent.definition;
+    let bootProjectRuntime = needsScopedRuntime ? projectRuntimes.get(bootRuntimeKey) || null : null;
+    if (needsScopedRuntime && !bootProjectRuntime) {
+      scheduleProjectRuntimeLoad(normalizedWorkDir, opts?.sessionMeta);
+      bootProjectRuntime = projectRuntimes.get(bootRuntimeKey) || null;
     }
     const bootStatus = mergedStatusForProjectRuntime(bootProjectRuntime);
     hydrateYeaftStatusFromSession({ ...session, status: bootStatus }, { reason: 'session_ready', emitEvent: true });
@@ -5676,7 +5744,13 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
       }
       let turnSessionMeta = null;
       try { turnSessionMeta = sessionCoordinator?.group?.getMeta?.() || null; } catch { turnSessionMeta = null; }
-      const projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
+      let projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
+      if (!projectRuntime && turnSessionMeta?.sharedAgentDefinitionId) {
+        // Identity and safety Skills must be present on the first turn. MCP
+        // connection may still take time, but the scoped runtime publication is
+        // the authoritative boundary and must complete before provider execution.
+        projectRuntime = await scheduleProjectRuntimeLoad(turnSessionMeta.workDir, turnSessionMeta);
+      }
 
       vpEngine = getOrCreateVpEngine(sessionId, vpId, threadId);
       if (escalationState) {

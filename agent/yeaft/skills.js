@@ -439,6 +439,32 @@ function displaySkillPath(relativePath) {
   return String(relativePath || '').replaceAll('\\', '/');
 }
 
+function discoverExactSkillDir(skillDir, repositoryRoot) {
+  try {
+    const lexicalRoot = resolve(repositoryRoot);
+    const canonicalRoot = realpathSync(lexicalRoot);
+    const lexicalDir = resolve(skillDir);
+    if (!pathIsInside(lexicalDir, lexicalRoot)) return { skills: [], errors: ['Shared Skill directory escapes repository root'] };
+    const dirStat = lstatSync(lexicalDir);
+    if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return { skills: [], errors: [] };
+    const canonicalDir = realpathSync(lexicalDir);
+    if (!pathIsInside(canonicalDir, canonicalRoot)) return { skills: [], errors: ['Shared Skill directory escapes repository root'] };
+    const skillFile = join(canonicalDir, 'SKILL.md');
+    const fileStat = lstatSync(skillFile);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > MAX_PROJECT_SKILL_BYTES) return { skills: [], errors: [] };
+    const raw = readFileSync(skillFile, 'utf8');
+    const skill = parseSkill(raw, basename(canonicalDir));
+    if (!skill?.name) return { skills: [], errors: [`Failed to parse skill: ${skillFile}`] };
+    skill._source = 'directory';
+    skill._path = canonicalDir;
+    skill._references = listSubdirFiles(join(canonicalDir, 'references'));
+    skill._templates = listSubdirFiles(join(canonicalDir, 'templates'));
+    return { skills: [skill], errors: [] };
+  } catch {
+    return { skills: [], errors: [] };
+  }
+}
+
 function discoverSkills(rootDir, subPath = '', opts = {}) {
   const dir = subPath ? join(rootDir, subPath) : rootDir;
   const ignorePaths = Array.isArray(opts.ignorePaths) ? opts.ignorePaths : [];
@@ -746,6 +772,12 @@ export class SkillManager {
   /** @type {Map<string, { workspaceRoot: string, relativeRoot: string }>} */
   #secureWorkspaceByDir;
 
+  /** @type {Map<string, string>} */
+  #repositoryRootByDir;
+
+  /** @type {Set<string>} */
+  #exactSkillDirs;
+
   /** Hash of the effective loaded skill set, including prompt content. */
   #snapshotHash = '';
 
@@ -753,7 +785,7 @@ export class SkillManager {
    * @param {string | string[]} dirs — single directory (back-compat) or array of
    *   directories in priority order (lowest → highest). Falsy entries are
    *   filtered out so callers can write `[bundled, user, projectOrNull]`.
-   * @param {{ userDir?: string, tierByDir?: Record<string, string>, ignorePathsByDir?: Record<string, string[]>, secureWorkspaceByDir?: Record<string, { workspaceRoot: string, relativeRoot: string }> }} [opts]
+   * @param {{ userDir?: string, tierByDir?: Record<string, string>, ignorePathsByDir?: Record<string, string[]>, secureWorkspaceByDir?: Record<string, { workspaceRoot: string, relativeRoot: string }>, repositoryRootByDir?: Record<string, string>, exactSkillDirs?: string[] }} [opts]
    *   userDir: directory where `save()` and `remove()` write. Defaults to the
    *     last entry in `dirs` (typical case: user dir is highest priority that
    *     isn't a per-project layer).
@@ -797,6 +829,15 @@ export class SkillManager {
         this.#secureWorkspaceByDir.set(d, secure);
       }
     }
+    this.#repositoryRootByDir = new Map();
+    if (opts && opts.repositoryRootByDir && typeof opts.repositoryRootByDir === 'object') {
+      for (const [d, repositoryRoot] of Object.entries(opts.repositoryRootByDir)) {
+        if (typeof d === 'string' && typeof repositoryRoot === 'string' && repositoryRoot) {
+          this.#repositoryRootByDir.set(d, repositoryRoot);
+        }
+      }
+    }
+    this.#exactSkillDirs = new Set(Array.isArray(opts?.exactSkillDirs) ? opts.exactSkillDirs : []);
   }
 
   /** The user-writable skills directory (save/remove target). */
@@ -832,14 +873,18 @@ export class SkillManager {
     for (const dir of this.#skillsDirs) {
       const secure = this.#secureWorkspaceByDir.get(dir);
       if (!secure && !existsSync(dir)) continue;
+      const repositoryRoot = this.#repositoryRootByDir.get(dir);
       const { skills, errors } = secure
         ? discoverWorkspaceSkills(secure.workspaceRoot, secure.relativeRoot)
-        : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] });
+        : (this.#exactSkillDirs.has(dir) && repositoryRoot
+          ? discoverExactSkillDir(dir, repositoryRoot)
+          : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] }));
       const tier = this.#tierByDir.get(dir) || basename(dir);
       for (const skill of skills) {
         // Platform filtering at load time
         if (!matchesPlatform(skill.platforms)) continue;
         skill._tier = tier;
+        skill._repositoryRoot = this.#repositoryRootByDir.get(dir) || '';
         // Later (higher-priority) tier overrides earlier entries with the
         // same name — this is the layered-load contract.
         this.#skills.set(skill.name, skill);
@@ -872,6 +917,7 @@ export class SkillManager {
         tier: skill._tier || '',
         references: skill._references || [],
         templates: skill._templates || [],
+        repositoryRoot: skill._repositoryRoot || '',
       }));
     return JSON.stringify(records);
   }
@@ -947,9 +993,12 @@ export class SkillManager {
     for (const dir of this.#skillsDirs) {
       const secure = this.#secureWorkspaceByDir.get(dir);
       if (!secure && !existsSync(dir)) continue;
+      const repositoryRoot = this.#repositoryRootByDir.get(dir);
       const { skills } = secure
         ? discoverWorkspaceSkills(secure.workspaceRoot, secure.relativeRoot)
-        : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] });
+        : (this.#exactSkillDirs.has(dir) && repositoryRoot
+          ? discoverExactSkillDir(dir, repositoryRoot)
+          : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] }));
       const tier = this.#tierByDir.get(dir) || basename(dir);
       for (const skill of skills) {
         if (!matchesPlatform(skill.platforms)) continue;
@@ -1158,7 +1207,10 @@ export class SkillManager {
     const skill = this.#skills.get(name);
     if (!skill) return '';
 
-    return `## Skill: ${skill.name}\n\n${skill.content}`;
+    const source = skill._repositoryRoot
+      ? `\n\nSource repository root: ${skill._repositoryRoot}\nResolve repository-relative file references from this root.`
+      : '';
+    return `## Skill: ${skill.name}${source}\n\n${skill.content}`;
   }
 
   /**
@@ -1222,6 +1274,18 @@ export class SkillManager {
 export function createSkillManager(yeaftDir, workDir, options = {}) {
   const bundledDirs = bundledYeaftSkillsDirs();
   const userDir = join(yeaftDir, 'skills');
+  const sharedAgentSources = Array.isArray(options.sharedAgentSources)
+    ? options.sharedAgentSources
+      .map(source => ({
+        dir: typeof source?.dir === 'string' ? source.dir.trim() : '',
+        repositoryRoot: typeof source?.repositoryRoot === 'string' ? source.repositoryRoot.trim() : '',
+        exactSkillDir: source?.exactSkillDir === true,
+      }))
+      .filter(source => source.dir)
+    : (Array.isArray(options.sharedAgentDirs)
+      ? options.sharedAgentDirs.map(dir => ({ dir: typeof dir === 'string' ? dir.trim() : '', repositoryRoot: '', exactSkillDir: false }))
+      : []);
+  const sharedAgentDirs = [...new Set(sharedAgentSources.map(source => source.dir).filter(Boolean))];
   const projectRoots = [...new Set(String(workDir || '')
     .split(delimiter)
     .map(p => p.trim())
@@ -1230,9 +1294,19 @@ export function createSkillManager(yeaftDir, workDir, options = {}) {
   const codexProjectDirs = projectRoots.map(root => join(root, '.agents', 'skills'));
   const projectDirs = projectRoots.map(root => join(root, '.yeaft', 'skills'));
 
-  const dirs = [...bundledDirs, userDir, ...claudeProjectDirs, ...codexProjectDirs, ...projectDirs];
+  // Shared Agent definitions contribute a read-only team tier. User and project
+  // overrides retain their existing higher priority, so adopting a shared identity
+  // never makes local safety fixes impossible.
+  const dirs = [...bundledDirs, ...sharedAgentDirs, userDir, ...claudeProjectDirs, ...codexProjectDirs, ...projectDirs];
   const tierByDir = {};
+  const repositoryRootByDir = {};
+  const exactSkillDirs = [];
   for (const dir of bundledDirs) tierByDir[dir] = 'bundled';
+  for (const dir of sharedAgentDirs) tierByDir[dir] = 'shared-agent';
+  for (const source of sharedAgentSources) {
+    if (source.repositoryRoot) repositoryRootByDir[source.dir] = source.repositoryRoot;
+    if (source.exactSkillDir) exactSkillDirs.push(source.dir);
+  }
   tierByDir[userDir] = 'user';
   for (const dir of claudeProjectDirs) tierByDir[dir] = 'project-claude';
   for (const dir of codexProjectDirs) tierByDir[dir] = 'project-codex';
@@ -1250,7 +1324,13 @@ export function createSkillManager(yeaftDir, workDir, options = {}) {
     }
   }
 
-  const manager = new SkillManager(dirs, { userDir, tierByDir, secureWorkspaceByDir });
+  const manager = new SkillManager(dirs, {
+    userDir,
+    tierByDir,
+    secureWorkspaceByDir,
+    repositoryRootByDir,
+    exactSkillDirs,
+  });
   manager.load();
   return manager;
 }

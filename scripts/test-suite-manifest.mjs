@@ -50,6 +50,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/agent/yeaft/route-forward-thread.test.js',
   'test/agent/yeaft/session-config.test.js',
   'test/agent/yeaft/session-recovery.test.js',
+  'test/agent/yeaft/shared-agent-definition.test.js',
   'test/agent/yeaft/sessions/pre-flow.test.js',
   'test/agent/yeaft/skills.test.js',
   'test/agent/yeaft/vp-seed.test.js',

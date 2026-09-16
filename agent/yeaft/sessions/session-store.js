@@ -144,6 +144,12 @@ export function createSession(sessionsRoot, spec) {
     announcement: typeof spec.announcement === 'string' ? spec.announcement : '',
     workDir: typeof spec.workDir === 'string' ? spec.workDir.trim() : '',
     workspaceKey: typeof spec.workspaceKey === 'string' ? spec.workspaceKey.trim() : '',
+    // A Session references a shared long-lived identity; its transcript and
+    // mutable runtime state remain owned by this Session.
+    sharedAgentDefinitionId: typeof spec.sharedAgentDefinitionId === 'string'
+      ? spec.sharedAgentDefinitionId.trim() : '',
+    sharedAgentDefinitionRevision: Number.isInteger(spec.sharedAgentDefinitionRevision)
+      && spec.sharedAgentDefinitionRevision > 0 ? spec.sharedAgentDefinitionRevision : null,
     createdAt: spec.createdAt || new Date().toISOString(),
     metadataUpdatedAt: spec.metadataUpdatedAt || spec.createdAt || new Date().toISOString(),
   };
@@ -168,6 +174,10 @@ export function loadSessionMeta(dir) {
     if (typeof parsed.announcement !== 'string') parsed.announcement = '';
     if (typeof parsed.workDir !== 'string') parsed.workDir = '';
     if (typeof parsed.workspaceKey !== 'string') parsed.workspaceKey = '';
+    if (typeof parsed.sharedAgentDefinitionId !== 'string') parsed.sharedAgentDefinitionId = '';
+    if (!Number.isInteger(parsed.sharedAgentDefinitionRevision) || parsed.sharedAgentDefinitionRevision < 1) {
+      parsed.sharedAgentDefinitionRevision = null;
+    }
     return parsed;
   } catch {
     return null;
@@ -206,6 +216,13 @@ function validateMeta(meta) {
   }
   if (meta.workDir != null && typeof meta.workDir !== 'string') {
     throw new Error('session.workDir must be string');
+  }
+  if (meta.sharedAgentDefinitionId != null && typeof meta.sharedAgentDefinitionId !== 'string') {
+    throw new Error('session.sharedAgentDefinitionId must be string');
+  }
+  if (meta.sharedAgentDefinitionRevision != null
+      && (!Number.isInteger(meta.sharedAgentDefinitionRevision) || meta.sharedAgentDefinitionRevision < 1)) {
+    throw new Error('session.sharedAgentDefinitionRevision must be a positive integer or null');
   }
 }
 
