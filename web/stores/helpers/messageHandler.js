@@ -244,6 +244,10 @@ export function handleMessage(store, msg) {
   store._lastPongAt = Date.now();
 
   switch (msg.type) {
+    case 'yeaft_shared_agent_definition_result':
+      window.Pinia?.useSharedAgentsStore?.()?.handleResult?.(msg);
+      break;
+
     case 'work_center_response': {
       const pending = msg.requestId ? store.workCenterPending[msg.requestId] : null;
       if (!pending) break;
@@ -320,6 +324,7 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
+      window.Pinia?.useSharedAgentsStore?.()?.loadOnlineCatalogs?.(store.agents || []);
       // Work Center projects live scheduler changes through work_center_event.
       // Routine inventory frames also carry latency/status updates, so refreshing
       // here turns every broadcast into a visible loading → empty/content cycle.

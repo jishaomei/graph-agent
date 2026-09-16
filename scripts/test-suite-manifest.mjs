@@ -106,6 +106,7 @@ export const CORE_TEST_FILES = Object.freeze([
   'test/web/yeaft-history-reveal-dom.test.js',
   'test/web/yeaft-history-search-ui.test.js',
   'test/web/yeaft-page-setup.test.js',
+  'test/web/shared-agents-frontend.test.js',
   'test/web/turn-debug-eyes.test.js',
 ]);
 

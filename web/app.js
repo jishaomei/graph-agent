@@ -3,6 +3,7 @@ import { useAuthStore } from './stores/auth.js';
 import { useVpStore } from './stores/vp.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useBrowserStore } from './stores/browser.js';
+import { useSharedAgentsStore } from './stores/shared-agents.js';
 import { createI18n } from './utils/i18n.js';
 import { installAuthFetch } from './utils/auth-fetch.js';
 import zhCN from './i18n/zh-CN.js';
@@ -23,7 +24,8 @@ window.Pinia = {
   ...Pinia,
   useChatStore: null,
   useAuthStore: null,
-  useBrowserStore: null
+  useBrowserStore: null,
+  useSharedAgentsStore: null
 };
 
 const App = {
@@ -86,6 +88,7 @@ window.Pinia.useAuthStore = useAuthStore;
 window.Pinia.useVpStore = useVpStore;
 window.Pinia.useSessionsStore = useSessionsStore;
 window.Pinia.useBrowserStore = useBrowserStore;
+window.Pinia.useSharedAgentsStore = useSharedAgentsStore;
 
 // Register global components
 app.component('ToolLine', ToolLine);

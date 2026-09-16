@@ -154,7 +154,7 @@ export default {
           </div>
 
           <YeaftSessionActions
-            v-if="!showOnboardingGuide"
+            v-if="!showOnboardingGuide && !pendingSharedAgent"
             class="yeaft-topbar-right"
             :search-open="historySearchOpen"
             :loading-more-history="store.yeaftManualHistoryRefreshLoading"
@@ -200,6 +200,17 @@ export default {
              no message data source after H2.f.1, so it's been deleted.
              Clicking a sidebar task still highlights it but the main pane
              stays on the conversation stream. -->
+
+        <section
+          v-if="!showSettings && pendingSharedAgent && store.yeaftVisibleMessages.length === 0"
+          class="yeaft-shared-agent-blank"
+          :aria-label="$t('sharedAgents.pendingAria')"
+        >
+          <div class="yeaft-shared-agent-blank-icon" aria-hidden="true">✦</div>
+          <h1>{{ pendingSharedAgent.name || pendingSharedAgent.id }}</h1>
+          <p>{{ $t('sharedAgents.pendingHint', { revision: pendingSharedAgent.revision }) }}</p>
+          <p v-if="sharedAgentCreateError" class="error" role="alert">{{ sharedAgentCreateError }}</p>
+        </section>
 
         <!-- No-session onboarding — when there is no Session, the bottom input
              cannot send anywhere. Replace the chat chrome with setup guidance
@@ -257,7 +268,7 @@ export default {
         </section>
 
         <div
-          v-if="!showSettings && !showOnboardingGuide && !conversationInventoryReady && !store.yeaftSessionHydrateError && store.yeaftVisibleMessages.length === 0"
+          v-if="!showSettings && !showOnboardingGuide && !pendingSharedAgent && !conversationInventoryReady && !store.yeaftSessionHydrateError && store.yeaftVisibleMessages.length === 0"
           class="initial-message-loading yeaft-conversation-bootstrap-loading"
           role="status"
           aria-live="polite"
@@ -272,7 +283,7 @@ export default {
              next step instead of a blank canvas. The modal still pops on
              top for groups the user hasn't dismissed yet. -->
         <div
-          v-if="!showSettings && !showOnboardingGuide && conversationInventoryReady && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
+          v-if="!showSettings && !showOnboardingGuide && !pendingSharedAgent && conversationInventoryReady && isActiveGroupEmpty && store.yeaftVisibleMessages.length === 0 && !store.yeaftInitialHistoryLoading && !store.yeaftHistoryLoadError"
           class="yeaft-empty-group-hero"
         >
           <div class="yeaft-empty-group-hero__icon" aria-hidden="true">
@@ -288,7 +299,7 @@ export default {
         </div>
         <MessageList
           ref="messageListRef"
-          v-if="!showSettings && !showOnboardingGuide && (conversationInventoryReady || store.yeaftVisibleMessages.length > 0) && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading)"
+          v-if="!showSettings && !showOnboardingGuide && !pendingSharedAgent && (conversationInventoryReady || store.yeaftVisibleMessages.length > 0) && (!isActiveGroupEmpty || store.yeaftVisibleMessages.length > 0 || store.yeaftInitialHistoryLoading)"
           @quote-message="setMessageQuote"
           @edit-message-as-new="editMessageAsNew"
         />
@@ -485,6 +496,11 @@ export default {
     // locale-aware naming. Read from the dedicated vp store rather than
     // reaching into the chat store so the helper signature stays clean.
     const vpStore = Pinia.useVpStore();
+    const sharedAgentsStore = Pinia.useSharedAgentsStore?.() || Vue.reactive({
+      selected: null,
+      selectedDefinition: null,
+      clearSelection() { this.selected = null; },
+    });
 
     const inst = Vue.getCurrentInstance();
     const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
@@ -515,6 +531,8 @@ export default {
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
     const messageQuote = Vue.ref(null);
+    const sharedAgentCreateError = Vue.ref('');
+    let pendingSharedAgentSend = null;
     const pageRef = Vue.ref(null);
     const messageListRef = Vue.ref(null);
     const historySearchRef = Vue.ref(null);
@@ -554,7 +572,9 @@ export default {
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
-      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || 'session';
+      const selected = sharedAgentsStore.selected;
+      const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId
+        || (selected ? `shared-agent:${selected.definitionId}:rev:${selected.revision}` : 'session');
       return `yeaft:${agentId}:${sessionId}`;
     });
     Vue.watch(yeaftInputDraftKey, () => {
@@ -947,7 +967,47 @@ export default {
       store.leaveYeaft();
     };
 
-    const sendMessage = (text, attachmentInfos, quote, quickSend = null) => {
+    const pendingSharedAgent = Vue.computed(() => sharedAgentsStore.selectedDefinition || null);
+
+    const sendMessage = async (text, attachmentInfos, quote, quickSend = null) => {
+      if (pendingSharedAgent.value) {
+        if (pendingSharedAgentSend) return false;
+        const selected = { ...sharedAgentsStore.selected };
+        const selectedDefinition = pendingSharedAgent.value;
+        sharedAgentCreateError.value = '';
+        pendingSharedAgentSend = (async () => {
+          const result = await store.createYeaftSession({
+            agentId: selected.agentId,
+            displayName: selectedDefinition.name || selected.definitionId,
+            sharedAgentDefinitionId: selected.definitionId,
+            sharedAgentDefinitionRevision: selected.revision,
+          });
+          const session = result?.session || null;
+          if (!result?.ok || !session?.id) {
+            sharedAgentCreateError.value = result?.error?.message || result?.error?.code || $t('sharedAgents.createFailed');
+            return false;
+          }
+          if (store.currentAgent !== selected.agentId) {
+            store.selectAgent?.(selected.agentId);
+            store.currentAgent = selected.agentId;
+          }
+          sessionsStore()?.setActive?.(session.id, selected.agentId);
+          store.setActiveSessionFilter?.(session.id, { agentId: selected.agentId, force: true });
+          sharedAgentsStore.clearSelection();
+          const mentions = parseMentions(text).mentions;
+          const attachments = Array.isArray(attachmentInfos) ? attachmentInfos : undefined;
+          return store.sendYeaftSessionMessage({
+            groupId: session.id,
+            text,
+            mentions,
+            attachments,
+            quote,
+            ...(quickSend ? { quickSend } : {}),
+          }) !== false;
+        })();
+        try { return await pendingSharedAgentSend; }
+        finally { pendingSharedAgentSend = null; }
+      }
       // task-334m: Pre-check `no_default_vp` before the WS round-trip.
       // If the active group has no roster + no defaultVpId, surface the
       // invite modal instead of sending a message that would round-trip
@@ -1061,7 +1121,13 @@ export default {
     });
 
     const topbarSessionTitle = Vue.computed(() => {
+      const selected = pendingSharedAgent.value;
+      if (selected) return `${selected.name || selected.id} · rev ${selected.revision}`;
       const g = topbarGroup.value || {};
+      if (g.sharedAgentDefinitionId && Number.isFinite(Number(g.sharedAgentDefinitionRevision))) {
+        const boundName = String(g.sharedAgentDefinitionName || g.name || g.title || g.sharedAgentDefinitionId).trim();
+        return `${boundName} · rev ${Number(g.sharedAgentDefinitionRevision)}`;
+      }
       const id = typeof g.id === 'string' ? g.id.trim() : '';
       const candidates = [g.title, g.name, g.config?.title, g.config?.name];
       for (const raw of candidates) {
@@ -1190,7 +1256,7 @@ export default {
 
     const openAgentSettings = (agentId, category = 'operations') => {
       agentSettingsAgentId.value = agentId || null;
-      agentSettingsInitialCategory.value = ['operations', 'trace', 'llm'].includes(category) ? category : 'operations';
+      agentSettingsInitialCategory.value = ['operations', 'trace', 'llm', 'shared-agents'].includes(category) ? category : 'operations';
       showAgentSettings.value = true;
     };
 
@@ -1301,6 +1367,7 @@ export default {
         && !!(gs && gs.hasLoadedSnapshot);
     });
     const showOnboardingGuide = Vue.computed(() => {
+      if (pendingSharedAgent.value) return false;
       const gs = sessionsStore();
       return shouldShowYeaftOnboardingGuide({
         agentInventoryReady: store._hasHandledAgentList === true,
@@ -1536,6 +1603,8 @@ export default {
       composerMenuOpen,
       topbarGroup,
       topbarSessionTitle,
+      pendingSharedAgent,
+      sharedAgentCreateError,
       topbarFolderPath,
       topbarModel,
       topbarModelLabel,

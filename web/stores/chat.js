@@ -4647,7 +4647,7 @@ export const useChatStore = defineStore('chat', {
     // shared sessionCrudRequest path so callers can `await` and surface
     // the new session row immediately. Phase 4 will rename the wire +
     // store fields; until then this is a thin facade.
-    createYeaftSession({ displayName, vpIds, defaultVpId, workDir, agentId } = {}) {
+    createYeaftSession({ displayName, vpIds, defaultVpId, workDir, agentId, sharedAgentDefinitionId, sharedAgentDefinitionRevision } = {}) {
       const roster = Array.isArray(vpIds) ? vpIds.slice() : [];
       // Caller may pin the default VP (e.g. SessionCreateModal's star button).
       // Fall back to the first roster member when omitted or invalid so the
@@ -4657,9 +4657,14 @@ export const useChatStore = defineStore('chat', {
         : (roster[0] || null);
       const trimmed = (displayName || '').trim();
       const trimmedWorkDir = (workDir || '').trim();
-      const payload = { roster, defaultVpId: resolvedDefault };
+      const payload = sharedAgentDefinitionId
+        ? {
+            sharedAgentDefinitionId,
+            sharedAgentDefinitionRevision: Number(sharedAgentDefinitionRevision),
+          }
+        : { roster, defaultVpId: resolvedDefault };
       if (trimmed) payload.name = trimmed;
-      if (trimmedWorkDir) payload.workDir = trimmedWorkDir;
+      if (!sharedAgentDefinitionId && trimmedWorkDir) payload.workDir = trimmedWorkDir;
       return this.sessionCrudRequest('create', payload, { agentId });
     },
     handleYeaftOutput(msg) {

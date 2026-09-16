@@ -94,7 +94,27 @@ export default {
         @create-in-project="onUnifiedCreateInProject"
         @close-work-center="chatStore.leaveWorkCenter"
         @action="onUnifiedSessionAction"
-      />
+      >
+        <template #before-recents>
+          <section class="sidebar-section shared-agents-section">
+            <div class="sidebar-section-heading"><span>{{ $t('sharedAgents.title') }}</span></div>
+            <div v-if="sharedAgentsStore?.isLoading && sharedAgentDefinitions.length === 0" class="sidebar-section-empty">{{ $t('common.loading') }}</div>
+            <div v-else-if="sharedAgentDefinitions.length === 0" class="sidebar-section-empty">{{ $t('sharedAgents.empty') }}</div>
+            <button
+              v-for="definition in sharedAgentDefinitions"
+              :key="definition.agentId + ':' + definition.id"
+              type="button"
+              class="shared-agent-sidebar-row"
+              :class="{ active: isSharedAgentSelected(definition) }"
+              @click="selectSharedAgent(definition)"
+            >
+              <span class="shared-agent-sidebar-name">{{ definition.name || definition.id }}</span>
+              <span class="shared-agent-sidebar-revision">{{ $t('sharedAgents.revision', { revision: definition.revision }) }}</span>
+            </button>
+            <div v-if="sharedAgentCatalogError" class="sidebar-section-empty error" role="alert">{{ sharedAgentCatalogError }}</div>
+          </section>
+        </template>
+      </UnifiedSessionList>
 
       <div v-else class="us-scroll us-scroll-flush">
         <!-- Legacy Yeaft list stays available until the catalog snapshot arrives. -->
@@ -284,6 +304,7 @@ export default {
       }
     };
     this._agentUpgradeBatchHandler = (event) => this.showAgentUpgradeBatchSummary(event.detail || {});
+    this.sharedAgentsStore?.loadOnlineCatalogs(this.onlineAgents);
     if (typeof window !== 'undefined') {
       window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
       window.addEventListener('agent-upgrade-batch-complete', this._agentUpgradeBatchHandler);
@@ -315,6 +336,17 @@ export default {
         }
       } catch (_) { /* no-pinia test env */ }
       return null;
+    },
+    sharedAgentsStore() {
+      try { return window.Pinia?.useSharedAgentsStore?.() || null; }
+      catch { return null; }
+    },
+    sharedAgentDefinitions() {
+      return this.sharedAgentsStore?.definitionList || [];
+    },
+    sharedAgentCatalogError() {
+      const errors = Object.values(this.sharedAgentsStore?.errorByAgent || {}).filter(Boolean);
+      return errors[0] || '';
     },
     activeSessionId() {
       return this.chatStore?.yeaftActiveSessionFilter || this.sessionsStore?.activeSessionId || null;
@@ -417,6 +449,23 @@ export default {
         if (v && v !== fullKey) return v;
       }
       return fallback;
+    },
+    isSharedAgentSelected(definition) {
+      const selected = this.sharedAgentsStore?.selected;
+      return selected?.agentId === definition?.agentId && selected?.definitionId === definition?.id;
+    },
+    selectSharedAgent(definition) {
+      if (!definition?.agentId || !definition?.id) return;
+      this.sharedAgentsStore?.selectDefinition(definition);
+      const s = this.chatStore || this.store;
+      s?.leaveWorkCenter?.();
+      if (s?.currentAgent !== definition.agentId) {
+        s?.selectAgent?.(definition.agentId);
+        s.currentAgent = definition.agentId;
+      }
+      this.sessionsStore?.setActive?.(null, definition.agentId);
+      s?.setActiveSessionFilter?.(null, { force: true });
+      if (s) s.currentView = 'yeaft';
     },
     isSessionProcessing(sessionId, agentId = null) {
       const s = this.chatStore || this.store;
