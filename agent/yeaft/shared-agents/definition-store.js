@@ -257,6 +257,15 @@ function collectSkillFiles(root) {
   return files;
 }
 
+function collectTrackedSkillFiles(repositoryRoot) {
+  const output = execFileSync('git', ['-C', repositoryRoot, 'ls-files', '-z', '--', '**/SKILL.md'], {
+    encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024,
+  });
+  const files = output.split('\0').filter(Boolean).map(relativePath => resolve(repositoryRoot, relativePath));
+  if (files.length > MAX_SOURCE_SKILLS) throw new Error('shared Skill source exceeds Skill count budget');
+  return files;
+}
+
 /** Resolve read-only repository roots containing directory-based Skills. */
 export function resolveSharedAgentSkillDirs(definition) {
   const dirs = [];
@@ -275,12 +284,14 @@ export function resolveSharedAgentSkillDirs(definition) {
         if (head !== source.revision) {
           throw new Error(`repository HEAD ${head} does not match pinned revision ${source.revision}`);
         }
-        const dirty = execFileSync('git', ['-C', repositoryRoot, 'status', '--porcelain'], {
+        const dirty = execFileSync('git', ['-C', repositoryRoot, 'status', '--porcelain', '--untracked-files=no'], {
           encoding: 'utf8', windowsHide: true, timeout: 10_000,
         }).trim();
-        if (dirty) throw new Error('repository checkout has uncommitted changes');
+        if (dirty) throw new Error('repository checkout has tracked uncommitted changes');
       }
-      const files = collectSkillFiles(repositoryRoot);
+      const files = source.revision
+        ? collectTrackedSkillFiles(repositoryRoot)
+        : collectSkillFiles(repositoryRoot);
       if (files.length === 0) {
         errors.push(`No SKILL.md files found under ${repositoryRoot}`);
       }
