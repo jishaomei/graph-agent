@@ -119,7 +119,27 @@ export default {
           @create-in-project="onUnifiedCreateInProject"
           @close-work-center="store.leaveWorkCenter"
           @action="onUnifiedSessionAction"
-        />
+        >
+          <template #before-recents>
+            <section class="sidebar-section shared-agents-section">
+              <div class="sidebar-section-heading"><span>{{ $t('sharedAgents.title') }}</span></div>
+              <div v-if="sharedAgentsStore?.isLoading && sharedAgentDefinitions.length === 0" class="sidebar-section-empty">{{ $t('common.loading') }}</div>
+              <div v-else-if="sharedAgentDefinitions.length === 0" class="sidebar-section-empty">{{ $t('sharedAgents.empty') }}</div>
+              <button
+                v-for="definition in sharedAgentDefinitions"
+                :key="definition.agentId + ':' + definition.id"
+                type="button"
+                class="shared-agent-sidebar-row"
+                :class="{ active: isSharedAgentSelected(definition) }"
+                @click="selectSharedAgent(definition)"
+              >
+                <span class="shared-agent-sidebar-name">{{ definition.name || definition.id }}</span>
+                <span class="shared-agent-sidebar-revision">{{ $t('sharedAgents.revision', { revision: definition.revision }) }}</span>
+              </button>
+              <div v-if="sharedAgentCatalogError" class="sidebar-section-empty error" role="alert">{{ sharedAgentCatalogError }}</div>
+            </section>
+          </template>
+        </UnifiedSessionList>
 
         <template v-else>
         <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
@@ -558,6 +578,17 @@ export default {
     onlineAgents() {
       return this.store.agents.filter(a => a.online);
     },
+    sharedAgentsStore() {
+      try { return window.Pinia?.useSharedAgentsStore?.() || null; }
+      catch { return null; }
+    },
+    sharedAgentDefinitions() {
+      return this.sharedAgentsStore?.definitionList || [];
+    },
+    sharedAgentCatalogError() {
+      const errors = Object.values(this.sharedAgentsStore?.errorByAgent || {}).filter(Boolean);
+      return errors[0] || '';
+    },
     onlineAgentCount() {
       return this.onlineAgents.length;
     },
@@ -623,6 +654,22 @@ export default {
     isCatalogSessionUnread(row) {
       if (row?.runtimeProvider !== 'yeaft') return false;
       return this.store.isYeaftSessionUnread(row.routeRef?.sessionId, row.routeRef?.agentId);
+    },
+    isSharedAgentSelected(definition) {
+      const selected = this.sharedAgentsStore?.selected;
+      return selected?.agentId === definition?.agentId && selected?.definitionId === definition?.id;
+    },
+    selectSharedAgent(definition) {
+      if (!definition?.agentId || !definition?.id) return;
+      this.sharedAgentsStore?.selectDefinition(definition);
+      this.store.leaveWorkCenter?.();
+      if (this.store.currentAgent !== definition.agentId) {
+        this.store.selectAgent?.(definition.agentId);
+        this.store.currentAgent = definition.agentId;
+      }
+      window.Pinia?.useSessionsStore?.()?.setActive?.(null, definition.agentId);
+      this.store.setActiveSessionFilter?.(null, { force: true });
+      this.store.currentView = 'yeaft';
     },
     onUnifiedCreate(provider = 'yeaft') {
       this.unifiedSessionCreateProject = null;

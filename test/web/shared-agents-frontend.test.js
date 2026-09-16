@@ -6,6 +6,7 @@ import * as Vue from 'vue';
 let useSharedAgentsStore;
 let YeaftSidebar;
 let YeaftPage;
+let ChatPage;
 let AgentSettingsPanel;
 
 const chatStore = Vue.reactive({
@@ -66,6 +67,7 @@ beforeAll(async () => {
   globalThis.Pinia.useSharedAgentsStore = useSharedAgentsStore;
   ({ default: YeaftSidebar } = await import('../../web/components/YeaftSidebar.js'));
   ({ default: YeaftPage } = await import('../../web/components/YeaftPage.js'));
+  ({ default: ChatPage } = await import('../../web/components/ChatPage.js'));
   ({ default: AgentSettingsPanel } = await import('../../web/components/AgentSettingsPanel.js'));
 });
 
@@ -120,6 +122,25 @@ describe('Shared Agents frontend', () => {
     expect(chatStore.selectAgent).toHaveBeenCalledWith('agent-a');
     expect(chatStore.setActiveSessionFilter).toHaveBeenCalledWith(null, { force: true });
     wrapper.unmount();
+  });
+
+  it('shows and selects Shared Agents from the default unified Chat sidebar', () => {
+    const shared = useSharedAgentsStore();
+    shared.applyCatalog('agent-a', [{ id: 'reviewer', name: 'Reviewer', revision: 4 }]);
+    chatStore.agents = [{ id: 'agent-a', name: 'A', online: true }];
+    chatStore.currentAgent = 'agent-b';
+    chatStore.currentView = 'chat';
+    chatStore.leaveWorkCenter = vi.fn();
+    chatStore.selectAgent = vi.fn();
+
+    expect(ChatPage.template).toContain('<template #before-recents>');
+    expect(ChatPage.template).toContain('class="sidebar-section shared-agents-section"');
+    ChatPage.methods.selectSharedAgent.call({ sharedAgentsStore: shared, store: chatStore }, shared.definitionList[0]);
+
+    expect(shared.selected).toEqual({ agentId: 'agent-a', definitionId: 'reviewer', revision: 4, name: 'Reviewer' });
+    expect(chatStore.selectAgent).toHaveBeenCalledWith('agent-a');
+    expect(chatStore.setActiveSessionFilter).toHaveBeenCalledWith(null, { force: true });
+    expect(chatStore.currentView).toBe('yeaft');
   });
 
   it('creates and activates once before first send, dedupes, and locks header to bound revision', async () => {

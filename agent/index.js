@@ -25,6 +25,7 @@ import {
 } from './upgrade-command.js';
 import { loadConfig as loadYeaftConfig } from './yeaft/config.js';
 import { initYeaftDir } from './yeaft/init.js';
+import { seedBundledSharedAgentDefinitions } from './yeaft/shared-agents/bundled-definitions.js';
 import { isWorkCenterEnabled } from './yeaft/work-center/feature.js';
 import { updateBrowserRuntimeSettings } from './yeaft/config-api.js';
 import { bootBrowserRuntime, shutdownBrowserRuntime } from './browser-runtime/index.js';
@@ -130,6 +131,17 @@ if (!process.env.WORK_DIR && !fileConfig.workDir) {
   } catch (err) {
     console.warn(`[Agent] Could not ensure default work dir ${WORK_DIR}: ${err?.message || err}`);
   }
+}
+try {
+  const seeded = seedBundledSharedAgentDefinitions(YEAFT_DIR, { workDir: WORK_DIR });
+  if (seeded.created.length > 0) {
+    console.log(`[Agent] Installed bundled Shared Agent: ${seeded.created.map(item => `${item.name} rev ${item.revision}`).join(', ')}`);
+  }
+  for (const skipped of seeded.skipped) {
+    console.warn(`[Agent] Bundled Shared Agent ${skipped.id} not installed: ${skipped.reason}`);
+  }
+} catch (err) {
+  console.warn(`[Agent] Could not install bundled Shared Agents: ${err?.message || err}`);
 }
 
 const CONFIG = {
