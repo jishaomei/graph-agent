@@ -34,8 +34,12 @@ import {
 } from './skills.js';
 import { buildPluginCatalog, createPluginSkillManager, resolveMcpPluginPolicy } from './plugins.js';
 import {
+  listSharedAgentDefinitions,
+  publishSharedAgentDefinition,
   readSharedAgentDefinition,
   resolveSharedAgentSkillDirs,
+  saveSharedAgentDraft,
+  SharedAgentDefinitionError,
 } from './shared-agents/definition-store.js';
 import { MCPManager } from './mcp.js';
 import { sendToServer } from '../connection/buffer.js';
@@ -783,9 +787,20 @@ function resolveSharedAgentRuntime(sessionMeta, yeaftDir) {
   if (!definitionId) return { definition: null, skillDirs: [], skillSources: [], errors: [] };
   const boundRevision = Number.isInteger(sessionMeta?.sharedAgentDefinitionRevision)
     ? sessionMeta.sharedAgentDefinitionRevision : null;
+  if (!boundRevision) {
+    throw new SessionCrudError(
+      'invalid_shared_agent_reference',
+      sessionMeta?.id || null,
+      `Shared Agent Session is missing a locked revision: ${definitionId}`,
+    );
+  }
   const definition = readSharedAgentDefinition(yeaftDir, definitionId, boundRevision);
   if (!definition) {
-    return { definition: null, skillDirs: [], skillSources: [], errors: [`Shared Agent definition not found: ${definitionId}`] };
+    throw new SessionCrudError(
+      'shared_agent_revision_not_found',
+      sessionMeta?.id || null,
+      `Shared Agent revision not found: ${definitionId}@${boundRevision}`,
+    );
   }
   const resolved = resolveSharedAgentSkillDirs(definition);
   return { definition, skillDirs: resolved.dirs, skillSources: resolved.sources, errors: resolved.errors };
@@ -3389,10 +3404,16 @@ async function sharedProjectContext(yeaftDir, sessionId, options = {}) {
   return context;
 }
 
+function publicSessionMeta(meta) {
+  if (!meta || typeof meta !== 'object') return meta;
+  return meta;
+}
+
 function sendSessionCrudResult(payload) {
-  const next = payload && payload.ok && Array.isArray(payload.sessions)
-    ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions) }
+  let next = payload && payload.ok && Array.isArray(payload.sessions)
+    ? { ...payload, sessions: decorateSessionsWithRuntimeState(payload.sessions).map(publicSessionMeta) }
     : payload;
+  if (next?.session) next = { ...next, session: publicSessionMeta(next.session) };
   sendSessionEvent({ type: 'session_crud_result', ...next });
 }
 
@@ -3612,6 +3633,7 @@ function sessionErrorPayload(err) {
   if (err instanceof SessionCrudError) code = err.code;
   else if (err instanceof SessionConfigError) code = err.code;
   else if (err instanceof ProjectStoreError) code = err.code;
+  else if (err instanceof SharedAgentDefinitionError) code = err.code;
   return {
     code,
     sessionId: err && err.sessionId,
@@ -3684,11 +3706,60 @@ export function handleYeaftProjectMutation(msg) {
   }
 }
 
-export function handleYeaftCreateSession(msg) {
-  const requestId = msg && msg.requestId;
-  const payload = (msg && msg.payload) || {};
+export async function handleYeaftSharedAgentDefinition(msg) {
+  const requestId = msg?.requestId || null;
+  const requestClientId = msg?._requestClientId || null;
+  const op = msg?.op;
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let result;
+    if (op === 'list') result = { definitions: listSharedAgentDefinitions(yeaftDir) };
+    else if (op === 'read') result = { definition: readSharedAgentDefinition(yeaftDir, msg.id, msg.revision ?? 'latest') };
+    else if (op === 'save') result = { definition: saveSharedAgentDraft(yeaftDir, msg.definition) };
+    else if (op === 'publish') result = { definition: publishSharedAgentDefinition(yeaftDir, msg.id || msg.definitionId) };
+    else throw new SharedAgentDefinitionError('invalid_op', 'Unknown Shared Agent definition operation');
+    await sendToServer({
+      type: 'yeaft_shared_agent_definition_result', op, requestId, ok: true, ...result,
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
+    });
+  } catch (err) {
+    await sendToServer({
+      type: 'yeaft_shared_agent_definition_result', op, requestId, ok: false,
+      error: sessionErrorPayload(err),
+      ...(requestClientId ? { _requestClientId: requestClientId } : {}),
+    });
+  }
+}
+
+export function handleYeaftCreateSession(msg) {
+  const requestId = msg && msg.requestId;
+  const incoming = (msg && msg.payload) || {};
+  try {
+    const yeaftDir = ctx.CONFIG?.yeaftDir;
+    let payload = incoming;
+    if (incoming.sharedAgentDefinitionId != null) {
+      const definition = readSharedAgentDefinition(
+        yeaftDir,
+        incoming.sharedAgentDefinitionId,
+        incoming.sharedAgentDefinitionRevision ?? null,
+      );
+      if (!definition) {
+        throw new SessionCrudError(
+          'shared_agent_not_found',
+          null,
+          `Shared Agent definition not found: ${incoming.sharedAgentDefinitionId}`,
+        );
+      }
+      payload = {
+        ...incoming,
+        name: definition.name,
+        roster: definition.roster,
+        defaultVpId: definition.defaultVpId || null,
+        workDir: definition.workDir || '',
+        sharedAgentDefinitionId: definition.id,
+        sharedAgentDefinitionRevision: definition.revision,
+      };
+    }
     const group = createSessionFromSpec(yeaftDir, payload, configuredVpPaths());
     recordAgentSessionCreated();
     group.config = loadSessionConfig(yeaftDir, group.id);
@@ -5237,8 +5308,10 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
   // task-334-session-editor: surface the session announcement to the engine so
   // buildWorkerPrompt can inject it as a CLAUDE.md-style shared prefix.
   // Empty/missing reads as '' and prompts.js skips the section.
-  if (sessionMeta && typeof sessionMeta.announcement === 'string') {
-    out.sessionAnnouncement = sessionMeta.announcement;
+  if (sessionMeta) {
+    out.sessionAnnouncement = typeof sessionMeta.announcement === 'string'
+      ? sessionMeta.announcement.trim()
+      : '';
   }
   // Surface the session's configured working directory so the engine can
   // resolve CLAUDE.md / AGENTS.md at that path and inject it as a

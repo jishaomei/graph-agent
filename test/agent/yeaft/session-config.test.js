@@ -31,7 +31,7 @@ import {
 import { buildPluginCatalog, createPluginSkillManager } from '../../../agent/yeaft/plugins.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { MCPManager } from '../../../agent/yeaft/mcp.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCopySession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftManagedSkill, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testLoadPluginCatalogMcpConfig, __testResetVpState, __testResolveVpEffectiveConfig, __testSetSession, buildVpQueryOpts, handleYeaftCopySession, handleYeaftCreateSession, handleYeaftLoadHistoryOutline, handleYeaftManagedSkill, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftUpdateSessionConfig, handleYeaftVpSubscribe, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { _resetAgentRegistry, getAgentRegistry } from '../../../agent/yeaft/tools/agent.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
@@ -40,7 +40,7 @@ import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSe
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { isMultiVpEnabled, setMultiVpEnabled } from '../../../agent/yeaft/sessions/feature-flag.js';
 import { DEFAULT_VPS } from '../../../agent/yeaft/vp/seed-defaults.js';
-import { copySession, registerSessionWorkDir, renameSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
+import { copySession, registerSessionWorkDir, renameSession, requireSession, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
 import {
   createProject,
   deleteProject,
@@ -786,6 +786,61 @@ describe('Yeaft session-scoped model config', () => {
       }),
     ]);
     expect(existsSync(join(root, 'memory', 'sessions', response.session.id, 'summary.md'))).toBe(true);
+  });
+
+  it('routes Shared Agent requests and authoritatively binds published definitions on Session create', async () => {
+    const root = makeDir();
+    ctx.CONFIG = { ...(originalConfig || {}), yeaftDir: root };
+    const definition = {
+      id: 'review-team',
+      name: 'Authoritative Review Team',
+      description: 'Reviewers',
+      instruction: 'BOUND_SHARED_AGENT_INSTRUCTION',
+      roster: ['omni', 'reviewer'],
+      defaultVpId: 'reviewer',
+      workDir: join(root, 'authoritative-workdir'),
+    };
+    await handleMessage({ type: 'yeaft_shared_agent_definition', op: 'save', definition, requestId: 'save-1', _requestClientId: 'client-1' });
+    await handleMessage({ type: 'yeaft_shared_agent_definition', op: 'publish', id: definition.id, requestId: 'publish-1', _requestClientId: 'client-1' });
+    const responseStart = ctx.messageBuffer.length;
+    handleYeaftCreateSession({
+      requestId: 'create-shared-agent',
+      payload: {
+        name: 'Untrusted browser name',
+        roster: ['fake'],
+        defaultVpId: 'fake',
+        workDir: join(root, 'untrusted'),
+        sharedAgentDefinitionId: definition.id,
+        sharedAgentDefinitionRevision: 1,
+      },
+    });
+    const response = ctx.messageBuffer.slice(responseStart)
+      .map(frame => frame.event)
+      .find(event => event?.type === 'session_crud_result' && event.requestId === 'create-shared-agent');
+    expect(response).toMatchObject({
+      ok: true,
+      session: {
+        name: definition.name,
+        roster: definition.roster,
+        defaultVpId: definition.defaultVpId,
+        workDir: definition.workDir,
+        sharedAgentDefinitionId: definition.id,
+        sharedAgentDefinitionRevision: 1,
+        sharedAgentDefinitionName: definition.name,
+      },
+    });
+    expect(response.session).not.toHaveProperty('sharedAgentInstruction');
+
+    const handle = requireSession(root, response.session.id);
+    const meta = handle.getMeta();
+    handle.close();
+    expect(meta.sharedAgentInstruction).toBe(definition.instruction);
+    const queryOpts = buildVpQueryOpts({
+      vpId: definition.defaultVpId,
+      sessionId: response.session.id,
+      sessionCoordinator: { group: { getMeta: () => meta } },
+    });
+    expect(queryOpts.sessionAnnouncement).toContain(definition.instruction);
   });
 
   async function assertMcpBootstrapRemoveDoesNotRestoreServer({ workDir = '' } = {}) {

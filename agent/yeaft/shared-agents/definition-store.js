@@ -7,10 +7,12 @@ import {
   realpathSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
+import { execFileSync } from 'node:child_process';
 import { writeAtomic } from '../storage/atomic.js';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const DEFINITION_FILE = 'definition.json';
+const DRAFT_FILE = 'draft.json';
 
 export class SharedAgentDefinitionError extends Error {
   constructor(code, message, definitionId = null) {
@@ -33,6 +35,10 @@ function definitionRevisionPath(yeaftDir, definitionId, revision) {
   return join(sharedAgentDefinitionsRoot(yeaftDir), definitionId, 'revisions', `${revision}.json`);
 }
 
+function definitionDraftPath(yeaftDir, definitionId) {
+  return join(sharedAgentDefinitionsRoot(yeaftDir), definitionId, DRAFT_FILE);
+}
+
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -49,6 +55,22 @@ function normalizeToolPolicy(input) {
     out[key] = mode;
   }
   return out;
+}
+
+function normalizeStringArray(value, field) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new SharedAgentDefinitionError(`invalid_${field}`, `${field} must be an array`);
+  }
+  return [...new Set(value.map(normalizeString).filter(Boolean))];
+}
+
+function normalizePermissions(input) {
+  if (input == null) return {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SharedAgentDefinitionError('invalid_permissions', 'permissions must be an object');
+  }
+  return structuredClone(input);
 }
 
 function normalizeSkillSource(source, index) {
@@ -85,9 +107,6 @@ export function normalizeSharedAgentDefinition(input, { previous = null, now = n
   const skillSources = Array.isArray(input?.skillSources)
     ? input.skillSources.map(normalizeSkillSource)
     : [];
-  if (skillSources.length === 0) {
-    throw new SharedAgentDefinitionError('invalid_skill_source', 'At least one skill source is required', id);
-  }
   const previousRevision = Number(previous?.revision) || 0;
   return {
     id,
@@ -95,8 +114,13 @@ export function normalizeSharedAgentDefinition(input, { previous = null, now = n
     description: normalizeString(input?.description),
     instruction,
     revision: previousRevision + 1,
+    roster: normalizeStringArray(input?.roster, 'roster'),
+    defaultVpId: normalizeString(input?.defaultVpId),
+    workDir: normalizeString(input?.workDir),
+    skills: normalizeStringArray(input?.skills, 'skills'),
     skillSources,
     toolPolicy: normalizeToolPolicy(input?.toolPolicy),
+    permissions: normalizePermissions(input?.permissions),
     createdAt: previous?.createdAt || now,
     updatedAt: now,
   };
@@ -150,6 +174,49 @@ export function saveSharedAgentDefinition(yeaftDir, input, { expectedRevision = 
   return definition;
 }
 
+function readDraft(yeaftDir, definitionId) {
+  const id = normalizeString(definitionId);
+  if (!ID_RE.test(id)) return null;
+  const file = definitionDraftPath(yeaftDir, id);
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed?.id === id ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save an unpublished draft without changing the catalog's published revision. */
+export function saveSharedAgentDraft(yeaftDir, input, { expectedRevision = null, now = new Date().toISOString() } = {}) {
+  const id = normalizeString(input?.id);
+  const published = readSharedAgentDefinition(yeaftDir, id);
+  if (expectedRevision !== null && Number(expectedRevision) !== Number(published?.revision || 0)) {
+    throw new SharedAgentDefinitionError('revision_conflict', 'Shared Agent definition changed since it was read', id || null);
+  }
+  const existingDraft = readDraft(yeaftDir, id);
+  const merged = { ...(published || {}), ...(existingDraft || {}), ...(input || {}), id };
+  const normalized = normalizeSharedAgentDefinition(merged, { previous: published, now });
+  const draft = {
+    ...normalized,
+    baseRevision: Number(published?.revision || 0),
+    revision: Number(published?.revision || 0) + 1,
+  };
+  const file = definitionDraftPath(yeaftDir, id);
+  mkdirSync(dirname(file), { recursive: true });
+  writeAtomic(file, `${JSON.stringify(draft, null, 2)}\n`);
+  return draft;
+}
+
+/** Publish the current draft as the next immutable revision. */
+export function publishSharedAgentDefinition(yeaftDir, definitionId, { expectedRevision = null, now } = {}) {
+  const id = normalizeString(definitionId);
+  const draft = readDraft(yeaftDir, id);
+  if (!draft) throw new SharedAgentDefinitionError('draft_not_found', 'Shared Agent draft not found', id || null);
+  const baseRevision = expectedRevision ?? draft.baseRevision ?? 0;
+  return saveSharedAgentDefinition(yeaftDir, draft, { expectedRevision: baseRevision, now });
+}
+
 const IGNORED_SOURCE_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.cache']);
 const MAX_SOURCE_DIRECTORIES = 100_000;
 const MAX_SOURCE_SKILLS = 2_000;
@@ -186,6 +253,18 @@ export function resolveSharedAgentSkillDirs(definition) {
       const stat = lstatSync(requestedRoot);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('repositoryPath is not a regular directory');
       const repositoryRoot = realpathSync(requestedRoot);
+      if (source.revision) {
+        const head = execFileSync('git', ['-C', repositoryRoot, 'rev-parse', 'HEAD'], {
+          encoding: 'utf8', windowsHide: true, timeout: 10_000,
+        }).trim();
+        if (head !== source.revision) {
+          throw new Error(`repository HEAD ${head} does not match pinned revision ${source.revision}`);
+        }
+        const dirty = execFileSync('git', ['-C', repositoryRoot, 'status', '--porcelain'], {
+          encoding: 'utf8', windowsHide: true, timeout: 10_000,
+        }).trim();
+        if (dirty) throw new Error('repository checkout has uncommitted changes');
+      }
       const files = collectSkillFiles(repositoryRoot);
       if (files.length === 0) {
         errors.push(`No SKILL.md files found under ${repositoryRoot}`);

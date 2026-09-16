@@ -885,6 +885,23 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_shared_agent_definition_result': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_shared_agent_definition_result',
+          agentId,
+          requestId: msg.requestId || null,
+          op: msg.op || null,
+          ok: msg.ok === true,
+          ...(Array.isArray(msg.definitions) ? { definitions: msg.definitions } : {}),
+          ...(msg.definition && typeof msg.definition === 'object' ? { definition: msg.definition } : {}),
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_managed_skill_result': {
       const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
       if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
