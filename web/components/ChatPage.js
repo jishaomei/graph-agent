@@ -104,6 +104,14 @@ export default {
 
         </div>
 
+        <SidebarWorkCenter
+          :agents="store.agents"
+          :active-agent-id="store.workCenterAgentId"
+          :collapsed="false"
+          :active="store.workCenterOpen"
+          @open="store.enterWorkCenter"
+        />
+
         <UnifiedSessionList
           v-if="store.sessionCatalogLoaded"
           :sessions="store.sessionCatalog"
@@ -142,14 +150,7 @@ export default {
         </UnifiedSessionList>
 
         <template v-else>
-        <!-- Legacy sidebar stays available until the catalog snapshot arrives. -->
-        <SidebarWorkCenter
-          :agents="store.agents"
-          :active-agent-id="store.workCenterAgentId"
-          :collapsed="false"
-          :active="store.workCenterOpen"
-          @open="store.enterWorkCenter"
-        />
+        <!-- Legacy session list stays available until the catalog snapshot arrives. -->
         <div class="session-tab-bar">
           <div class="session-tab active session-tab-solo">
             <svg class="session-tab-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>

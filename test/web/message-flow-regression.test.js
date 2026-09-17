@@ -3090,6 +3090,7 @@ describe('message flow regressions', () => {
       routeRef: { runtimeProvider: 'copilot', agentId: 'agent-a', sessionId: 'legacy-chat' },
     }));
     expect(chatPage.find('.sidebar-work-center-header-btn').exists()).toBe(false);
+    expect(chatPage.findComponent(SidebarWorkCenter).exists()).toBe(true);
     chatPage.unmount();
 
     parentStore.currentView = 'yeaft';
